@@ -1,14 +1,18 @@
 /**
  * Handler bot Telegram untuk e-TA.
  *
- * Menangani command /jadwal dengan sub-kategori:
- *   /jadwal            -> jadwal sidang hari ini
- *   /jadwal besok      -> jadwal sidang besok
- *   /jadwal <hari>     -> jadwal hari tertentu (senin, selasa, dll)
- *   /jadwal <tanggal>  -> jadwal tanggal tertentu (contoh: 2026-11-12)
- *   /jadwal semua      -> semua jadwal (bisa banyak)
+ * Menangani command:
+ *   /start, /help, /menu -> bantuan perintah
+ *   /jadwal              -> jadwal sidang hari ini
+ *   /jadwal besok        -> jadwal sidang besok
+ *   /jadwal <hari>       -> jadwal hari tertentu (senin, selasa, dll)
+ *   /jadwal <tanggal>    -> jadwal tanggal tertentu (contoh: 2026-11-12)
+ *   /jadwal semua        -> semua jadwal (bisa banyak)
+ *   /judul <kata kunci>  -> pencarian judul skripsi
+ *   /status              -> status koneksi e-TA
  *
- * Dipanggil via webhook (Coolify/VPS atau Vercel serverless). Tidak ada polling.
+ * Mendukung mode Long Polling (otomatis di VPS/Coolify/lokal)
+ * dan Webhook (Vercel serverless atau reverse proxy VPS).
  */
 
 const config = require('../src/config');
@@ -59,7 +63,11 @@ const HARI_MAP = {
  *  fallback tanpa parse_mode supaya user tetap dapat balasan. */
 async function sendMessage(chatId, text) {
   const token = config.bot.botToken;
-  if (!token || !text) return false;
+  if (!token) {
+    console.error('[bot] sendMessage dibatalkan: TELEGRAM_BOT_TOKEN kosong di environment!');
+    return false;
+  }
+  if (!text) return false;
   const url = 'https://api.telegram.org/bot' + token + '/sendMessage';
 
   const body = JSON.stringify({
@@ -85,7 +93,7 @@ async function sendMessage(chatId, text) {
       const detail = await res.text().catch(() => '');
       console.error('[bot] sendMessage gagal (' + res.status + '):', detail.slice(0, 200));
     } catch (e) {
-      console.error('[bot] gagal kirim:', e.message);
+      console.error('[bot] sendMessage network error:', e.message);
       return false;
     }
   }
@@ -185,13 +193,80 @@ async function handleUpdate(update) {
   if (update.update_id !== undefined && isDuplicate(update.update_id)) return;
 
   const chatId = msg.chat.id;
-  const text = msg.text.trim();
+  const rawText = msg.text.trim();
 
-  // Command /jadwal dengan argumen.
+  // Bersihkan command dari suffix username bot (/start@nama_bot -> /start)
+  const text = rawText.replace(/^(\/[a-zA-Z0-9_]+)@[a-zA-Z0-9_]+bot\b/i, '$1');
+  const isGroup = msg.chat.type === 'group' || msg.chat.type === 'supergroup';
+
+  // Di grup, abaikan chat biasa yang bukan command.
+  if (!text.startsWith('/')) {
+    if (isGroup) return;
+    await sendMessage(chatId, helpText());
+    return;
+  }
+
+  const senderName = msg.from ? (msg.from.username ? `@${msg.from.username}` : (msg.from.first_name || 'user')) : 'unknown';
+  console.log(`[bot] Update #${update.update_id || '-'}: command dari ${chatId} (${senderName}): "${text}"`);
+
+  // /start, /help, /menu
+  if (/^\/(start|help|menu)$/i.test(text)) {
+    await sendMessage(chatId, helpText());
+    return;
+  }
+
+  // /status
+  if (/^\/status$/i.test(text)) {
+    await sendTyping(chatId);
+    try {
+      const svc = getSvc();
+      const statusText =
+        '📊 *Status API & Bot e-TA*\n\n' +
+        '• Status: *Online*\n' +
+        `• Session e-TA: *${svc.connected ? 'Terhubung' : 'Belum aktif (login saat request)'}*\n` +
+        (svc.lastLoginAt ? `• Login terakhir: \`${svc.lastLoginAt}\`\n` : '') +
+        `• Mode Telegram: *${process.env.TELEGRAM_POLLING === 'false' ? 'Webhook' : 'Polling'}*`;
+      await sendMessage(chatId, statusText);
+    } catch (e) {
+      await sendMessage(chatId, '⚠️ Gagal cek status: ' + (e.message || 'kesalahan tidak dikenal'));
+    }
+    return;
+  }
+
+  // /judul <kata kunci>
+  const judulMatch = text.match(/^\/judul(?:\s+([\s\S]+))?$/i);
+  if (judulMatch) {
+    await sendTyping(chatId);
+    const query = (judulMatch[1] || '').trim();
+    try {
+      const svc = getSvc();
+      await svc.connect();
+      const res = await svc.judulSkripsi({ q: query });
+      const daftar = res.daftar || [];
+      if (!daftar.length) {
+        await sendMessage(chatId, `Tidak ditemukan judul skripsi${query ? ` untuk kata kunci: *${escapeMd(query)}*` : ''}.`);
+        return;
+      }
+      const maks = 10;
+      let reply = `📚 *Daftar Judul Skripsi*${query ? ` (filter: ${escapeMd(query)})` : ''}\nTotal ditemukan: *${daftar.length}*\n\n`;
+      const items = daftar.slice(0, maks).map((item, idx) => {
+        return `${idx + 1}. *${escapeMd(item.judul)}*\n   👤 ${escapeMd(item.nama)} (${escapeMd(item.nim)})`;
+      });
+      reply += items.join('\n\n');
+      if (daftar.length > maks) {
+        reply += `\n\n_...dan ${daftar.length - maks} judul lainnya. Pertajam kata kunci untuk hasil lebih spesifik._`;
+      }
+      await sendMessage(chatId, reply);
+    } catch (e) {
+      await sendMessage(chatId, '⚠️ Gagal mencari judul: ' + (e.message || 'kesalahan tidak dikenal'));
+    }
+    return;
+  }
+
+  // /jadwal dengan argumen.
   const jadwalMatch = text.match(/^\/(jadwal|jadwal_skripsi|skripsi)(?:\s+([\s\S]+))?$/i);
   if (!jadwalMatch) {
-    // /start, /help, atau teks tak dikenal: balas INSTAN, tanpa menyentuh e-TA.
-    await sendMessage(chatId, helpText());
+    await sendMessage(chatId, 'Perintah tidak dikenali.\n\n' + helpText());
     return;
   }
 
@@ -213,8 +288,8 @@ async function handleUpdate(update) {
     // "/jadwal" tanpa argumen -> hari ini.
     if (!args) {
       const tgl = today.toISOString().slice(0, 10);
-      const text = formatJadwalTanggal(data.jadwal, tgl, namaHari);
-      await sendMessage(chatId, text);
+      const replyText = formatJadwalTanggal(data.jadwal, tgl, namaHari);
+      await sendMessage(chatId, replyText);
       return;
     }
 
@@ -238,8 +313,8 @@ async function handleUpdate(update) {
     }
     const tglDate = new Date(target + 'T00:00:00');
     const namaTarget = NAMA_HARI[tglDate.getDay()];
-    const text = formatJadwalTanggal(data.jadwal, target, namaTarget);
-    await sendMessage(chatId, text);
+    const replyText = formatJadwalTanggal(data.jadwal, target, namaTarget);
+    await sendMessage(chatId, replyText);
   } catch (e) {
     await sendMessage(chatId, '⚠️ Gagal mengambil jadwal: ' + (e.message || 'kesalahan tidak dikenal'));
   }
@@ -248,16 +323,103 @@ async function handleUpdate(update) {
 /** Teks bantuan command. */
 function helpText() {
   return (
-    '📋 *e-TA Jadwal Sidang*\n\n' +
-    'Command:\n' +
-    '`/jadwal` — jadwal hari ini\n' +
+    '📋 *Bot e-TA FT Unmul*\n\n' +
+    'Perintah Jadwal Sidang:\n' +
+    '`/jadwal` — jadwal sidang hari ini\n' +
     '`/jadwal besok` — jadwal besok\n' +
     '`/jadwal lusa` — jadwal lusa\n' +
-    '`/jadwal senin` — jadwal hari Senin terdekat (minggu/besok)\n' +
+    '`/jadwal senin` — jadwal hari tertentu terdekat\n' +
     '`/jadwal 2026-11-12` — jadwal tanggal tertentu\n' +
-    '`/jadwal semua` — total semua jadwal\n' +
-    '`/start`, `/help` — bantuan ini'
+    '`/jadwal semua` — total semua jadwal\n\n' +
+    'Perintah Lainnya:\n' +
+    '`/judul <kata kunci>` — cari judul skripsi\n' +
+    '`/status` — cek status koneksi e-TA\n' +
+    '`/help` — panduan bantuan ini'
   );
 }
 
-module.exports = { handleUpdate, parseTarget, formatJadwalTanggal, jadwalTanggal };
+let _pollingRunning = false;
+
+/**
+ * Jalankan long-polling Telegram.
+ * Dipakai saat berjalan sebagai server persisten (VPS/Coolify/lokal),
+ * sehingga bot langsung merespons tanpa butuh domain, SSL, ataupun webhook.
+ */
+async function startPolling() {
+  const token = config.bot.botToken;
+  if (!token) {
+    console.log('[bot] TELEGRAM_BOT_TOKEN belum diatur. Bot Telegram polling tidak aktif.');
+    return;
+  }
+
+  if (process.env.TELEGRAM_POLLING === 'false') {
+    console.log('[bot] TELEGRAM_POLLING=false. Menggunakan mode webhook di /api/webhook.');
+    return;
+  }
+
+  if (_pollingRunning) return;
+  _pollingRunning = true;
+
+  // Bersihkan webhook yang mungkin masih aktif agar getUpdates tidak menghasilkan error 409 Conflict.
+  try {
+    const delRes = await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ drop_pending_updates: false }),
+    });
+    const delData = await delRes.json().catch(() => ({}));
+    if (delData.ok) {
+      console.log('[bot] Webhook dibersihkan, beralih ke mode Telegram polling.');
+    }
+  } catch (e) {
+    console.warn('[bot] Gagal membersihkan webhook lama:', e.message);
+  }
+
+  console.log('[bot] Telegram long-polling aktif, siap menerima perintah (/start, /jadwal, dll)!');
+
+  let offset = 0;
+  (async () => {
+    while (_pollingRunning) {
+      try {
+        const url = `https://api.telegram.org/bot${token}/getUpdates?offset=${offset}&timeout=25`;
+        const res = await fetch(url, { signal: AbortSignal.timeout(35000) });
+        if (!res.ok) {
+          const detail = await res.text().catch(() => '');
+          console.error(`[bot] getUpdates gagal (${res.status}): ${detail.slice(0, 150)}`);
+          await new Promise((r) => setTimeout(r, 4000));
+          continue;
+        }
+
+        const data = await res.json();
+        if (data.ok && Array.isArray(data.result)) {
+          for (const update of data.result) {
+            offset = update.update_id + 1;
+            handleUpdate(update).catch((e) => {
+              console.error('[bot] Error memproses update:', e.message);
+            });
+          }
+        }
+      } catch (e) {
+        if (e.name !== 'TimeoutError' && !e.message?.includes('aborted')) {
+          console.error('[bot] Polling network error:', e.message);
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+  })();
+}
+
+function stopPolling() {
+  _pollingRunning = false;
+}
+
+module.exports = {
+  handleUpdate,
+  startPolling,
+  stopPolling,
+  parseTarget,
+  formatJadwalTanggal,
+  jadwalTanggal,
+  sendMessage,
+  helpText,
+};

@@ -248,6 +248,8 @@ scripts/setWebhook.js   # Skrip daftarkan webhook ke Telegram
 | `/jadwal senin` (dst.) | Jadwal hari tertentu terdekat |
 | `/jadwal 2026-11-12` | Jadwal tanggal tertentu |
 | `/jadwal semua` | Total semua jadwal |
+| `/judul <kata kunci>` | Cari judul skripsi |
+| `/status` | Cek status server API & session e-TA |
 
 ### Langkah deploy
 
@@ -421,26 +423,20 @@ Lihat **Logs** untuk progres build dan output runtime.
 - Session tersimpan di **volume `wa-session`** (dikelola Coolify) — login
   bertahan antar redeploy/restart container.
 
-### Webhook Telegram via VPS (pengganti Vercel — opsional)
+### Bot Telegram di VPS/Coolify (Polling Otomatis vs Webhook)
 
-Server `api` juga punya endpoint `POST /api/webhook` (dengan verifikasi secret
-header). Kalau mau bot Telegram jalan penuh di VPS:
+Secara default, saat server Node berjalan di VPS/Coolify, bot Telegram otomatis menggunakan **Long Polling** (`TELEGRAM_POLLING=true`).
+- **Langsung jalan tanpa domain & SSL**: bot langsung menghubungi API Telegram secara outbound, sehingga `/start` dan semua command langsung direspon seketika setelah deploy!
+- Otomatis menghapus webhook lama (jika sebelumnya pernah memakai webhook di Vercel) agar polling tidak konflik.
 
-1. Beri domain ke service `api` — di Coolify mulai versi baru, ini di tab
-   **Domains/Configuration** resource (klik service `api` di list compose),
-   atau tambahkan `ports: ["3001:3001"]` di `docker-compose.yaml` lalu redeploy.
-   Format di Coolify versi lama: field *Domains* berisi
-   `https://api.domainanda.com` → otomatis mendapat HTTPS via proxy internal.
-2. Daftarkan webhook ke Telegram (dari komputer lokal, token bot di `.env`):
-   ```
+**Opsi Webhook (Bila punya Domain & SSL):**
+Jika ingin beralih ke mode webhook murni di VPS:
+1. Set env var di Coolify: `TELEGRAM_POLLING=false` dan buat `TELEGRAM_WEBHOOK_SECRET`.
+2. Pasang domain HTTPS ke service `api` di Coolify.
+3. Daftarkan webhook ke Telegram:
+   ```bash
    npm run set-webhook -- https://api.domainanda.com/api/webhook
    ```
-3. Keuntungan: **notifikasi berkala TIDAK mati** di VPS — scheduler jalan
-   normal (berbeda dengan Vercel yang serverless).
-
-> Bot Telegram dua-duanya tidak bertabrakan: **satu bot = satu webhook**.
-> Kalau webhook dipindah ke VPS, hapus/skip deploy Vercel yang lama; sebaliknya
-> hanya Vercel yang aktif kalau webhook menunjuk ke sana.
 
 ### Monitoring & maintenance
 

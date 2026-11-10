@@ -43,8 +43,8 @@ function asyncHandler(fn) {
   };
 }
 
-// --- Webhook bot Telegram (alternatif pengganti Vercel: langsung dari VPS/Coolify) ---
-const { handleUpdate } = require('./bot/bot');
+// --- Bot Telegram (polling otomatis & webhook di VPS/Coolify) ---
+const { handleUpdate, startPolling, stopPolling } = require('./bot/bot');
 
 app.post('/api/webhook', (req, res) => {
   // Verifikasi secret header untuk keamanan (sama dengan api/webhook.js).
@@ -186,6 +186,14 @@ app.use((err, req, res, next) => {
 // --- Start ---
 app.listen(config.api.port, async () => {
   console.log(`e-TA REST API berjalan di http://localhost:${config.api.port}`);
+
+  // Bot Telegram: Long polling otomatis berjalan jika TELEGRAM_BOT_TOKEN diset
+  if (config.bot.botToken) {
+    startPolling().catch((e) => console.error('[bot] Gagal memulai polling:', e.message));
+  } else {
+    console.log('[bot] Bot Telegram nonaktif (TELEGRAM_BOT_TOKEN belum diset di environment)');
+  }
+
   if (notifier.enabled) {
     console.log(`[notifier] Telegram aktif, cek perubahan tiap ${Math.round(config.notifier.intervalMs / 1000)} detik`);
     // Jalankan sekali untuk mengisi snapshot awal (tanpa kirim), lalu berjalan berkala.
@@ -194,4 +202,16 @@ app.listen(config.api.port, async () => {
   } else {
     console.log('[notifier] Telegram nonaktif (atur TELEGRAM_BOT_TOKEN & TELEGRAM_CHAT_ID untuk mengaktifkan)');
   }
+});
+
+// Penanganan graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('Menerima SIGTERM, mematikan server & polling...');
+  stopPolling();
+  process.exit(0);
+});
+process.on('SIGINT', () => {
+  console.log('Menerima SIGINT, mematikan server & polling...');
+  stopPolling();
+  process.exit(0);
 });

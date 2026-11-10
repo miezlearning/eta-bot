@@ -1,46 +1,61 @@
-# docker-compose.yaml — deploy dua layanan sekaligus di Coolify:
+# docker-compose.yaml — deploy dua layanan sekaligus di Coolify / VPS:
 #
-#   api : REST API e-TA (Node) — juga melayani webhook bot Telegram (/api/webhook)
-#         dan scheduler notifikasi Telegram bila TELEGRAM_BOT_TOKEN di-set.
+#   api : REST API e-TA (Node) — melayani polling & webhook bot Telegram (/api/webhook)
+#         serta scheduler notifikasi Telegram jika TELEGRAM_BOT_TOKEN di-set.
 #   wa  : bot WhatsApp (Go, whatsmeow) — butuh volume persisten SQLite session.
 #
-# Kredensial (E_TA_USERID, E_TA_PASSWORD, TELEGRAM_BOT_TOKEN, dst) TIDAK ditulis
-# di sini — set di tab "Environment Variables" resource Coolify, otomatis
-# terinject ke kedua service.
+# Kredensial di-set di tab "Environment Variables" resource Coolify.
+# File .env otomatis dibaca (env_file) dan dipetakan ke container di bawah.
 
 services:
   api:
     build: .
     restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
     environment:
-      - API_PORT=3001
-      - TZ=Asia/Jakarta
+      - API_PORT=${API_PORT:-3001}
+      - TZ=${TZ:-Asia/Jakarta}
+      - E_TA_USERID=${E_TA_USERID:-}
+      - E_TA_PASSWORD=${E_TA_PASSWORD:-}
+      - E_TA_ROLE=${E_TA_ROLE:-Mahasiswa}
+      - BASE_URL=${BASE_URL:-https://e-office.ft.unmul.ac.id}
+      - HTTP_TIMEOUT=${HTTP_TIMEOUT:-15000}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - TELEGRAM_WEBHOOK_SECRET=${TELEGRAM_WEBHOOK_SECRET:-}
+      - TELEGRAM_POLLING=${TELEGRAM_POLLING:-true}
+      - NOTIFY_INTERVAL_MS=${NOTIFY_INTERVAL_MS:-900000}
     expose:
       - "3001"
+    ports:
+      - "${API_PORT:-3001}:3001"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3001/api/health"]
       interval: 60s
       timeout: 10s
       retries: 3
       start_period: 30s
-    # Untuk webhook Telegram via VPS (opsional, lihat README bagian Coolify):
-    # assignment domain/ports dilakukan dari tab "Domains" resource Coolify,
-    # atau tambahkan:
-    # ports:
-    #   - "3001:3001"
 
   wa:
     build: ./wa-bot
     restart: unless-stopped
     depends_on:
       - api
+    env_file:
+      - path: .env
+        required: false
     environment:
       # Nama service "api" di-resolve DNS internal jaringan compose.
-      - E_TA_API_BASE=http://api:3001
-      - WA_DB=/data/wa_session.db
-      - TZ=Asia/Jakarta
+      - E_TA_API_BASE=${E_TA_API_BASE:-http://api:3001}
+      - WA_DB=${WA_DB:-/data/wa_session.db}
+      - TZ=${TZ:-Asia/Jakarta}
+      - WA_PAIR_PHONE=${WA_PAIR_PHONE:-}
+      - WA_ALLOWED_CHATS=${WA_ALLOWED_CHATS:-}
+      - WA_LOG=${WA_LOG:-WARN}
     volumes:
-      # Session WhatsApp WhatsApp bertahan antar re-deploy.
+      # Session WhatsApp bertahan antar re-deploy.
       - wa-session:/data
 
 volumes:

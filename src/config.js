@@ -27,11 +27,13 @@ module.exports = {
     intervalMs: parseInt(process.env.NOTIFY_INTERVAL_MS || '900000', 10),
   },
 
-  /** Bot Telegram (webhook untuk Vercel). */
+  /** Bot Telegram (webhook untuk Vercel / polling untuk VPS & Coolify). */
   bot: {
     botToken: process.env.TELEGRAM_BOT_TOKEN || '',
     // Kunci untuk memverifikasi webhook (harus sama dengan yang dipakai saat setWebhook).
     secret: process.env.TELEGRAM_WEBHOOK_SECRET || '',
+    // Polling aktif secara default di server persisten kecuali diset 'false'.
+    polling: process.env.TELEGRAM_POLLING !== 'false',
   },
 
   /** Timeout HTTP (ms) */
