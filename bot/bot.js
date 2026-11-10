@@ -8,20 +8,40 @@
  *   /jadwal <tanggal>  -> jadwal tanggal tertentu (contoh: 2026-11-12)
  *   /jadwal semua      -> semua jadwal (bisa banyak)
  *
- * Bot ini dipanggil via webhook (Vercel serverless). Menerima update Telegram
- * dan mengembalikan pesan reply. Tidak ada polling.
- *
- * Penggunaan:
- *   const { handleUpdate } = require('./bot');
- *   // di dalam fungsi webhook:
- *   await handleUpdate(update);
+ * Dipanggil via webhook (Coolify/VPS atau Vercel serverless). Tidak ada polling.
  */
 
 const config = require('../src/config');
-const { EtaService } = require('../src/eta/service');
 
-// Instance service global (reuse session selama function hidup di Vercel).
-const svc = new EtaService(config.credentials);
+// ---------------------------------------------------------------------------
+// Lazy service load: module service (cheerio/axios/tough-cookie) hanya dimuat
+// saat ada command yang butuh data e-TA. /start & /help tetap instan walau
+// cold start (Vercel).
+let _svc = null;
+function getSvc() {
+  if (!_svc) {
+    const { EtaService } = require('../src/eta/service');
+    _svc = new EtaService(config.credentials);
+  }
+  return _svc;
+}
+
+// ---------------------------------------------------------------------------
+// Dedup update: Telegram mengirim ulang update yang sama bila webhook tidak
+// segera di-ack; tanpa filter ini antrean menumpuk dan SEMUA command terasa
+// lambat. Set menjaga urutan insertion, jadi penuh tinggal buang yang terlama.
+const seenUpdates = new Set();
+function isDuplicate(updateId) {
+  if (seenUpdates.has(updateId)) return true;
+  seenUpdates.add(updateId);
+  if (seenUpdates.size > 1000) {
+    for (const id of seenUpdates) {
+      seenUpdates.delete(id);
+      if (seenUpdates.size <= 500) break;
+    }
+  }
+  return false;
+}
 
 // Nama hari Indonesia -> indeks JS (0=Minggu).
 const NAMA_HARI = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
@@ -35,27 +55,61 @@ const HARI_MAP = {
   sabtu: 6,
 };
 
-/** Helper: kirim pesan ke Telegram via Bot API. */
+/** Kalau parse_mode Markdown ditolak Telegram (judul mengandung _ * [ dll),
+ *  fallback tanpa parse_mode supaya user tetap dapat balasan. */
 async function sendMessage(chatId, text) {
   const token = config.bot.botToken;
-  if (!token) return;
+  if (!token || !text) return false;
   const url = 'https://api.telegram.org/bot' + token + '/sendMessage';
+
+  const body = JSON.stringify({
+    chat_id: chatId,
+    text,
+    parse_mode: 'Markdown',
+    disable_web_page_preview: true,
+  });
+  const bodyPlain = JSON.stringify({
+    chat_id: chatId,
+    text,
+    disable_web_page_preview: true,
+  });
+
+  for (const payload of [body, bodyPlain]) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+      });
+      if (res.ok) return true;
+      const detail = await res.text().catch(() => '');
+      console.error('[bot] sendMessage gagal (' + res.status + '):', detail.slice(0, 200));
+    } catch (e) {
+      console.error('[bot] gagal kirim:', e.message);
+      return false;
+    }
+  }
+  return false;
+}
+
+/** Indikator "typing..." supaya user tahu bot sedang memproses. */
+async function sendTyping(chatId) {
+  const token = config.bot.botToken;
+  if (!token) return;
   try {
-    const res = await fetch(url, {
+    await fetch('https://api.telegram.org/bot' + token + '/sendChatAction', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text,
-        parse_mode: 'Markdown',
-        disable_web_page_preview: true,
-      }),
+      body: JSON.stringify({ chat_id: chatId, action: 'typing' }),
     });
-    return res.ok;
-  } catch (e) {
-    console.error('[bot] gagal kirim:', e.message);
-    return false;
+  } catch (_) {
+    // Best-effort saja; gagal typing tidak boleh mempengaruhi jawaban.
   }
+}
+
+/** Escape karakter Markdown agar parse_mode tidak gagal pada judul e-TA. */
+function escapeMd(s) {
+  return String(s || '').replace(/([_*\[`])/g, '\\$1');
 }
 
 /** Cari jadwal untuk tanggal tertentu (format YYYY-MM-DD) dari daftar event. */
@@ -67,7 +121,7 @@ function jadwalTanggal(jadwal, tanggal) {
 function parseTarget(args) {
   const now = new Date();
 
-  // "besok" -> besok
+  // "besok" / "lusa"
   if (/besok|lusa/i.test(args)) {
     const d = new Date(now);
     d.setDate(d.getDate() + (/lusa/i.test(args) ? 2 : 1));
@@ -75,7 +129,7 @@ function parseTarget(args) {
   }
 
   // "hari ini" / "sekarang"
-  if (/hari.?ini|sekarang|sekarang/i.test(args)) {
+  if (/hari.?ini|sekarang/i.test(args)) {
     return now.toISOString().slice(0, 10);
   }
 
@@ -96,10 +150,10 @@ function parseTarget(args) {
   const hariKey = args.toLowerCase().replace(/[^a-z']/g, '');
   const hariIdx = HARI_MAP[hariKey];
   if (hariIdx !== undefined) {
-    // cari tanggal terdekat dengan hari tersebut (hari ini atau mendatang)
+    // cari tanggal terdekat dengan hari tersebut (hari yang sama -> minggu depan)
     const d = new Date(now);
     let diff = (hariIdx - d.getDay() + 7) % 7;
-    if (diff === 0) diff = 7; // hari yang sama hari ini? pakai minggu depan agar jelas
+    if (diff === 0) diff = 7;
     d.setDate(d.getDate() + diff);
     return d.toISOString().slice(0, 10);
   }
@@ -115,7 +169,8 @@ function formatJadwalTanggal(jadwal, tanggal, namaHari) {
     return header + '\n\nTidak ada jadwal sidang pada tanggal ini.';
   }
   const lines = events.map((e, i) => {
-    return (i + 1) + '. ' + e.jam + ' — ' + e.title + ' (_' + e.jenis + '_)';
+    const jam = typeof e.jam === 'string' ? e.jam.slice(0, 5) : e.jam;
+    return (i + 1) + '. ' + jam + ' — ' + escapeMd(e.title) + ' (_' + escapeMd(e.jenis) + '_)';
   });
   return header + '\n' + lines.join('\n');
 }
@@ -126,25 +181,32 @@ async function handleUpdate(update) {
   const msg = update && update.message;
   if (!msg || !msg.text) return;
 
+  // Skip update yang sudah pernah diproses (retry Telegram).
+  if (update.update_id !== undefined && isDuplicate(update.update_id)) return;
+
   const chatId = msg.chat.id;
   const text = msg.text.trim();
 
   // Command /jadwal dengan argumen.
-  const jadwalMatch = text.match(/^\/(jadwal|jadwal_skripsi|skripsi)(?:\s+(.*))?$/i);
+  const jadwalMatch = text.match(/^\/(jadwal|jadwal_skripsi|skripsi)(?:\s+([\s\S]+))?$/i);
   if (!jadwalMatch) {
+    // /start, /help, atau teks tak dikenal: balas INSTAN, tanpa menyentuh e-TA.
     await sendMessage(chatId, helpText());
     return;
   }
 
+  // Feedback cepat: "typing..." sebelum proses e-TA.
+  await sendTyping(chatId);
+
   const args = (jadwalMatch[2] || '').trim();
 
   try {
+    const svc = getSvc();
     // Pastikan login & ambil data jadwal.
-    // enrich=false -> hanya 1 request (cepat). Bot tidak menampilkan prodi per-event.
+    // enrich=false -> hanya 1 request (cepat). Field prodi tidak dipakai bot.
     await svc.connect();
     const data = await svc.jadwalSkripsi({ enrich: false, useCache: true });
 
-    // Format nama hari Indonesia untuk tanggal.
     const today = new Date();
     const namaHari = NAMA_HARI[today.getDay()];
 
@@ -156,7 +218,7 @@ async function handleUpdate(update) {
       return;
     }
 
-    // "/jadwal semua" -> tampilkan semua (jumlah).
+    // "/jadwal semua" -> ringkasan total.
     if (/^semua|all$/i.test(args)) {
       const total = data.jadwal.length;
       await sendMessage(
