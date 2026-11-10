@@ -1,0 +1,47 @@
+# docker-compose.yaml — deploy dua layanan sekaligus di Coolify:
+#
+#   api : REST API e-TA (Node) — juga melayani webhook bot Telegram (/api/webhook)
+#         dan scheduler notifikasi Telegram bila TELEGRAM_BOT_TOKEN di-set.
+#   wa  : bot WhatsApp (Go, whatsmeow) — butuh volume persisten SQLite session.
+#
+# Kredensial (E_TA_USERID, E_TA_PASSWORD, TELEGRAM_BOT_TOKEN, dst) TIDAK ditulis
+# di sini — set di tab "Environment Variables" resource Coolify, otomatis
+# terinject ke kedua service.
+
+services:
+  api:
+    build: .
+    restart: unless-stopped
+    environment:
+      - API_PORT=3001
+      - TZ=Asia/Jakarta
+    expose:
+      - "3001"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/api/health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    # Untuk webhook Telegram via VPS (opsional, lihat README bagian Coolify):
+    # assignment domain/ports dilakukan dari tab "Domains" resource Coolify,
+    # atau tambahkan:
+    # ports:
+    #   - "3001:3001"
+
+  wa:
+    build: ./wa-bot
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      # Nama service "api" di-resolve DNS internal jaringan compose.
+      - E_TA_API_BASE=http://api:3001
+      - WA_DB=/data/wa_session.db
+      - TZ=Asia/Jakarta
+    volumes:
+      # Session WhatsApp WhatsApp bertahan antar re-deploy.
+      - wa-session:/data
+
+volumes:
+  wa-session:

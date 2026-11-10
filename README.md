@@ -22,6 +22,7 @@ script otomasi, dsb.
 - [Notifikasi Telegram](#notifikasi-perubahan-jadwal-telegram)
 - [Deploy ke Vercel (Bot Telegram)](#deploy-ke-vercel-bot-telegram--webhook)
 - [Bot WhatsApp (Go)](#bot-whatsapp-go-wa-bot)
+- [Deploy ke Coolify (VPS)](#deploy-ke-coolify-vps)
 - [Contoh Pemakaian](#contoh-pemakaian)
 - [Contoh Respons](#contoh-respons)
 - [Struktur Project](#struktur-project)
@@ -346,6 +347,122 @@ go build .                 # -> wa-bot.exe  (kompilasi butuh Go 1.26; toolchain 
 
 ---
 
+## Deploy ke Coolify (VPS)
+
+Deploy **semua sekaligus** (API + WA bot + webhook Telegram) sebagai satu stack
+**Docker Compose** di Coolify. Panduan ini memakai nama konsep yang stabil antar
+versi Coolify — karena Coolify sering memperbarui UI, **label tombol/tab bisa
+berubah tapi konsepnya sama**; kalau posisinya beda, cari konsepnya di panel
+kiri/atas dashboard.
+
+### File deployment yang disiapkan
+
+```
+Dockerfile              # Build API Node (image ringan alpine)
+.dockerignore           # Menjaga build context kecil & aman
+docker-compose.yaml     # Stack 2 service: api + wa (volume persisten)
+wa-bot/Dockerfile       # Multi-stage build bot Go (tanpa CGO)
+wa-bot/.dockerignore
+```
+
+### Arsitektur di VPS
+
+```
+                            ┌────────── Coolify (VPS) ──────────┐
+Telegram ── webhook ──────► │  service api: 3001                │
+  (via domain proxy)        │   • REST API e-TA                 │
+                            │   • POST /api/webhook (bot TG)    │
+                            │   • scheduler notifikasi Telegram │
+                            │                │ http://api:3001  │
+HP WhatsApp ◄─────────────► │  service wa:                    │
+  (whatsmeow WebSocket)     │   • wa-bot (Go, whatsmeow)       │
+                            │   • volume: wa-session (SQLite)  │
+                            └────────────────────────────────────┘
+```
+
+### Langkah deploy
+
+**1. Repo sudah ter-push** ke `https://github.com/miezlearning/eta-bot` (branch `main`).
+
+**2. Buat resource baru di Coolify:**
+- Dashboard **Projects** → pilih/buat project → **New Resource**.
+- Pilih sumber repo (GitHub App / Public Repository / Deploy Key — salah satu).
+- Pilih repo `miezlearning/eta-bot`, branch `main`.
+- Coolify otomatis mendeteksi `docker-compose.yaml` — pilih tipe **Docker Compose**.
+
+**3. Set Environment Variables** (tab **Environments/Envs** — tersimpan di Coolify,
+bukan di repo; kredensial tidak ikut ke GitHub):
+
+| Env var | Nilai | Wajib |
+|---------|-------|-------|
+| `E_TA_USERID` | NIM Anda | ✅ |
+| `E_TA_PASSWORD` | password AIS | ✅ |
+| `E_TA_ROLE` | `Mahasiswa` | ✅ |
+| `TELEGRAM_BOT_TOKEN` | token dari @BotFather | notifikasi |
+| `TELEGRAM_CHAT_ID` | chat ID target notifikasi | notifikasi |
+| `NOTIFY_INTERVAL_MS` | `900000` (15 menit) | — |
+| `TELEGRAM_WEBHOOK_SECRET` | string acak | webhook TG |
+| `WA_PAIR_PHONE` | `+62xxx` (login tanpa QR) | login WA |
+| `WA_ALLOWED_CHATS` | JID dipisah koma | keamanan WA |
+| `WA_LOG` | `WARN` | — |
+
+Kredensial e-TA hanya dibutuhkan service `api`; bot WA tidak butuh kredensial
+e-TA (bot hanya memanggil API internal via `http://api:3001`).
+
+**4. Klik Deploy** — Coolify membangun kedua image & menjalankan stack.
+Lihat **Logs** untuk progres build dan output runtime.
+
+### Login WhatsApp pertama kali di VPS
+
+- QR code tampil di tab **Logs** service `wa` (render unicode). Tapi di layar
+  VPS sering susah discan — **disarankan set `WA_PAIR_PHONE=+62xxx` di env**
+  lalu redeploy: bot tampilkan **kode pairing 8 digit** yang dimasukkan lewat
+  HP (WhatsApp → Perangkat Tertaut → Taut dengan nomor telepon saja).
+- Session tersimpan di **volume `wa-session`** (dikelola Coolify) — login
+  bertahan antar redeploy/restart container.
+
+### Webhook Telegram via VPS (pengganti Vercel — opsional)
+
+Server `api` juga punya endpoint `POST /api/webhook` (dengan verifikasi secret
+header). Kalau mau bot Telegram jalan penuh di VPS:
+
+1. Beri domain ke service `api` — di Coolify mulai versi baru, ini di tab
+   **Domains/Configuration** resource (klik service `api` di list compose),
+   atau tambahkan `ports: ["3001:3001"]` di `docker-compose.yaml` lalu redeploy.
+   Format di Coolify versi lama: field *Domains* berisi
+   `https://api.domainanda.com` → otomatis mendapat HTTPS via proxy internal.
+2. Daftarkan webhook ke Telegram (dari komputer lokal, token bot di `.env`):
+   ```
+   npm run set-webhook -- https://api.domainanda.com/api/webhook
+   ```
+3. Keuntungan: **notifikasi berkala TIDAK mati** di VPS — scheduler jalan
+   normal (berbeda dengan Vercel yang serverless).
+
+> Bot Telegram dua-duanya tidak bertabrakan: **satu bot = satu webhook**.
+> Kalau webhook dipindah ke VPS, hapus/skip deploy Vercel yang lama; sebaliknya
+> hanya Vercel yang aktif kalau webhook menunjuk ke sana.
+
+### Monitoring & maintenance
+
+- **Health check**: `GET /api/health` — sudah di-set sebagai healthcheck Docker
+  container `api` (interval 60s). Status tampil di halaman resource Coolify.
+- **Env berubah?** Edit di tab Environments → klik **Redeploy/Restart**.
+- **Ganti kode?** push ke GitHub → klik **Deploy** ulang (atau aktifkan webhook
+  auto-deploy Coolify dari GitHub, kalau versi Anda memilikinya).
+- **Bongkar WA login**: hapus isi volume `wa-session` dari menu
+  Persistent Storage lalu deploy ulang untuk login baru.
+
+### Catatan penting VPS
+
+- Zona waktu: container default UTC — compose sudah set `TZ=Asia/Jakarta` di
+  kedua service supaya perhitungan "jadwal hari ini" tidak bergeser.
+- Scan QR lewat layar menu Logs bisa merepotkan — `WA_PAIR_PHONE` lebih praktis.
+- Tambah/cari konsep di UI Coolify, bukan nama tombol: versi Coolify sering
+  berganti label, tapi tab **Environments / Domains / Persistent Storage /
+  Logs / Deploy** selalu ada di dalam halaman resource.
+
+---
+
 ## Contoh Pemakaian
 
 ### Cek server hidup
@@ -565,11 +682,15 @@ RAE/
 ├── scripts/
 │   └── setWebhook.js      # Daftarkan webhook Telegram ke URL Vercel
 ├── vercel.json            # Konfigurasi deploy Vercel
+├── Dockerfile             # Build image API Node (untuk Coolify/VPS)
+├── .dockerignore
+├── docker-compose.yaml    # Stack Coolify: service api + wa (volume persisten)
 ├── wa-bot/
 │   ├── main.go            # Entry point bot WhatsApp (koneksi QR/pairing + event loop)
 │   ├── commands.go        # Command engine bot WA (/jadwal, /judul, /status)
 │   ├── api.go             # HTTP client menuju API e-TA
-│   └── logic_test.go      # Unit test logika tanggal & format
+│   ├── logic_test.go      # Unit test logika tanggal & format
+│   └── Dockerfile         # Multi-stage build bot Go (tanpa CGO)
 ├── server.js              # Express REST API server (routes + scheduler, run lokal)
 ├── test.js                # Skrip uji coba (login + parse)
 ├── .env.example           # Template konfigurasi

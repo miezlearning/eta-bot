@@ -43,6 +43,20 @@ function asyncHandler(fn) {
   };
 }
 
+// --- Webhook bot Telegram (alternatif pengganti Vercel: langsung dari VPS/Coolify) ---
+const { handleUpdate } = require('./bot/bot');
+
+app.post('/api/webhook', (req, res) => {
+  // Verifikasi secret header untuk keamanan (sama dengan api/webhook.js).
+  const secret = config.bot.secret;
+  if (secret && req.headers['x-telegram-bot-api-secret-token'] !== secret) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  }
+  // Ack cepat ke Telegram, lalu proses di background (server persisten sudah aman).
+  res.status(200).json({ ok: true });
+  handleUpdate(req.body).catch((e) => console.error('[webhook] error:', e.message));
+});
+
 // --- Middleware: pastikan session aktif sebelum semua route di bawah ini ---
 app.use('/api', async (req, res, next) => {
   try {
