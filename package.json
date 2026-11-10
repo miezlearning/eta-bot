@@ -1,0 +1,30 @@
+{
+  "name": "eta-rest-api",
+  "version": "1.0.0",
+  "description": "REST API untuk sistem e-Tugas Akhir (e-TA) Fakultas Teknik Universitas Mulawarman",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "set-webhook": "node scripts/setWebhook.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "eta",
+    "rest-api",
+    "unmul",
+    "tugas-akhir",
+    "scraper",
+    "telegram-bot",
+    "vercel"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.21.1",
+    "cheerio": "^1.2.0",
+    "dotenv": "^18.0.10",
+    "express": "^5.3.0",
+    "tough-cookie": "^6.1.0"
+  }
+}

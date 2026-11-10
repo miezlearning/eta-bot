@@ -1,0 +1,10 @@
+node_modules/
+.env
+*.log
+.DS_Store
+dist/
+build/
+# WhatsApp bot (Go)
+wa_session.db
+wa_session.db-*
+wa-bot/wa-bot.exe
