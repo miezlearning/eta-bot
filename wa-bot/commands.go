@@ -63,6 +63,12 @@ func handleIncoming(chat types.JID, text string) {
 		reply = tanganiJadwal(argumen)
 	case "judul":
 		reply = tanganiJudul(argumen)
+	case "mhs", "mahasiswa", "cari":
+		reply = tanganiMahasiswa(argumen)
+	case "statistik", "stats":
+		reply = tanganiStatistik(argumen)
+	case "detail":
+		reply = tanganiDetail(argumen)
 	default:
 		// Command tak dikenal: abaikan (aman untuk grup).
 		return
@@ -89,22 +95,29 @@ func kirimBalasan(chat types.JID, teks string) {
 // teksBantuan menampilkan menu command bot.
 func teksBantuan() string {
 	return strings.Join([]string{
-		"Bot e-TA -- Jadwal Sidang TA/Skripsi FT Unmul",
+		"Bot e-TA -- Layanan Informasi Skripsi FT Unmul",
 		"",
-		"Perintah:",
+		"Pencarian Mahasiswa & Judul:",
+		"/mhs <nama/NIM> -- info judul, dosen pembimbing & penguji, serta riwayat sempro, semhas, & pdd",
+		"/judul <kata kunci> -- cari judul skripsi & dosen penilai",
+		"/detail <NIM/token> -- detail ruang, kapasitas, & SK tim penilai",
+		"",
+		"Statistik Sidang:",
+		"/statistik -- statistik sempro, semhas, & pdd bulan ini",
+		"/statistik <bulan/tahun> -- contoh: /statistik november, /statistik 2026-06, /statistik 2026",
+		"",
+		"Jadwal Sidang:",
 		"/jadwal -- jadwal sidang hari ini",
 		"/jadwal besok -- jadwal besok",
 		"/jadwal lusa -- jadwal lusa",
 		"/jadwal kemarin -- jadwal kemarin",
-		"/jadwal kamis -- jadwal hari kamis terdekat",
-		"/jadwal 2026-11-12 atau /jadwal 12/11 -- jadwal tanggal tertentu",
+		"/jadwal kamis -- jadwal hari terdekat",
+		"/jadwal 2026-11-23 atau /jadwal 23/11 -- jadwal tanggal tertentu",
 		"/jadwal semua -- ringkasan total + 5 jadwal berikutnya",
 		"",
-		"Perintah lain:",
+		"Lainnya:",
 		"/status -- status koneksi API e-TA",
-		"/judul <kata kunci> -- cari judul skripsi",
-		"",
-		"Contoh: /jadwal besok",
+		"/help -- menu bantuan ini",
 	}, "\n")
 }
 
@@ -449,3 +462,295 @@ func parseTanggalSlash(s string) (time.Time, bool) {
 
 // now() di sini dipakai oleh parseTanggalSlash agar konsisten dgn timezone lokal.
 func now() time.Time { return time.Now() }
+
+func isAllDigits(s string) bool {
+	for _, r := range s {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return len(s) > 0
+}
+
+// tanganiMahasiswa: /mhs <nama/NIM>
+func tanganiMahasiswa(arg string) string {
+	q := strings.TrimSpace(arg)
+	if q == "" {
+		return "Format: /mhs <nama atau NIM>\nContoh:\n/mhs Renaldi\n/mhs 2209106054"
+	}
+	if !eta.TryAcquire() {
+		return "Bot sedang memproses permintaan lain, coba lagi beberapa detik."
+	}
+	defer eta.Release()
+
+	res, err := eta.FetchMahasiswa(q)
+	if err != nil {
+		return "Gagal mencari data mahasiswa: " + err.Error()
+	}
+	if res.Total == 0 || len(res.Matches) == 0 {
+		return "Mahasiswa dengan kata kunci '" + q + "' tidak ditemukan di sistem e-TA.\nTips: Pastikan ejaan nama benar atau gunakan NIM lengkap."
+	}
+
+	if res.Total == 1 {
+		m := res.Matches[0]
+		var sb strings.Builder
+		sb.WriteString("Data Mahasiswa & Tugas Akhir e-TA\n\n")
+		sb.WriteString("Nama: " + m.Nama + "\n")
+		sb.WriteString("NIM: " + m.NIM + "\n")
+		if m.Prodi != "" {
+			sb.WriteString("Prodi: " + m.Prodi + "\n")
+		}
+		if m.BatasWaktu != "" {
+			sb.WriteString("Status Batas: " + m.BatasWaktu + "\n")
+		}
+		sb.WriteString("\nJudul Tugas Akhir:\n")
+		if m.Judul != "" {
+			sb.WriteString(m.Judul + "\n")
+		} else {
+			sb.WriteString("Belum terdaftar\n")
+		}
+
+		sb.WriteString("\nDosen Pembimbing & Penguji:\n")
+		roles := []struct {
+			key, label string
+		}{
+			{"pembimbing_1", "Pembimbing 1"},
+			{"pembimbing_2", "Pembimbing 2"},
+			{"penguji_1", "Penguji 1"},
+			{"penguji_2", "Penguji 2"},
+		}
+		adaDosen := false
+		for _, r := range roles {
+			if d, ok := m.Dosen[r.key]; ok && d.Nama != "" {
+				adaDosen = true
+				sb.WriteString("- " + r.label + ": " + d.Nama)
+				if d.Status != "" {
+					sb.WriteString(" [" + d.Status + "]")
+				}
+				sb.WriteString("\n")
+			}
+		}
+		if !adaDosen {
+			sb.WriteString("- Belum ada data penilai\n")
+		}
+
+		sb.WriteString("\nRiwayat & Timeline Sidang:\n")
+		if len(m.RiwayatSidang) > 0 {
+			for _, s := range m.RiwayatSidang {
+				sb.WriteString("- " + s.Jenis + ":\n")
+				if s.Tanggal != "" {
+					jam := s.Jam
+					if s.JamSelesai != "" && len(jam) >= 5 {
+						jam = jam[:5] + " - " + s.JamSelesai
+					}
+					sb.WriteString("  Tanggal: " + s.Tanggal + " (" + jam + " WITA)\n")
+					ruang := s.Ruang
+					if ruang == "" {
+						ruang = "Menunggu penetapan ruang"
+					}
+					sb.WriteString("  Ruang: " + ruang + "\n")
+				} else {
+					sb.WriteString("  Tanggal: Menunggu jadwal antrean\n")
+				}
+			}
+		} else {
+			sb.WriteString("- Belum memiliki jadwal sidang terdaftar\n")
+		}
+		return sb.String()
+	}
+
+	// Multiple matches
+	var sb strings.Builder
+	sb.WriteString("Ditemukan " + strconv.Itoa(res.Total) + " mahasiswa untuk kata kunci '" + q + "':\n\n")
+	maks := 8
+	for i, m := range res.Matches {
+		if i >= maks {
+			sb.WriteString("...dan " + strconv.Itoa(res.Total-maks) + " mahasiswa lainnya. Masukkan NIM untuk hasil spesifik.\n\n")
+			break
+		}
+		sb.WriteString(strconv.Itoa(i+1) + ". " + m.Nama + " (" + m.NIM + ")\n")
+		if m.Judul != "" {
+			jdl := m.Judul
+			if len(jdl) > 60 {
+				jdl = jdl[:60] + "..."
+			}
+			sb.WriteString("   Judul: " + jdl + "\n")
+		}
+	}
+	sb.WriteString("\nKetik: /mhs <NIM> untuk melihat detail lengkap.")
+	return sb.String()
+}
+
+// tanganiStatistik: /statistik [bulan/tahun]
+func tanganiStatistik(arg string) string {
+	raw := strings.TrimSpace(arg)
+	if !eta.TryAcquire() {
+		return "Bot sedang memproses permintaan lain, coba lagi beberapa detik."
+	}
+	defer eta.Release()
+
+	var bulanParam, tahunParam string
+	if raw == "" || strings.EqualFold(raw, "ini") {
+		bulanParam = time.Now().Format("2006-01")
+	} else if len(raw) == 4 && isAllDigits(raw) {
+		tahunParam = raw
+	} else if strings.Contains(raw, "-") || strings.Contains(raw, "/") {
+		parts := strings.FieldsFunc(raw, func(r rune) bool { return r == '-' || r == '/' })
+		if len(parts) == 2 {
+			if len(parts[0]) == 4 {
+				m, _ := strconv.Atoi(parts[1])
+				bulanParam = fmt.Sprintf("%s-%02d", parts[0], m)
+			} else if len(parts[1]) == 4 {
+				m, _ := strconv.Atoi(parts[0])
+				bulanParam = fmt.Sprintf("%s-%02d", parts[1], m)
+			}
+		}
+	} else {
+		lower := strings.ToLower(raw)
+		for bNama, bIdx := range map[string]int{
+			"januari": 1, "jan": 1, "februari": 2, "feb": 2, "maret": 3, "mar": 3,
+			"april": 4, "apr": 4, "mei": 5, "juni": 6, "jun": 6, "juli": 7, "jul": 7,
+			"agustus": 8, "agu": 8, "september": 9, "sep": 9, "oktober": 10, "okt": 10,
+			"november": 11, "nov": 11, "desember": 12, "des": 12,
+		} {
+			if strings.Contains(lower, bNama) {
+				bulanParam = fmt.Sprintf("%d-%02d", time.Now().Year(), bIdx)
+				break
+			}
+		}
+		if bulanParam == "" && !strings.EqualFold(raw, "semua") {
+			bulanParam = time.Now().Format("2006-01")
+		}
+	}
+
+	res, err := eta.FetchStatistik(bulanParam, tahunParam)
+	if err != nil {
+		return "Gagal mengambil statistik: " + err.Error()
+	}
+
+	var sb strings.Builder
+	if res.TargetBulan != nil {
+		b := res.TargetBulan
+		sb.WriteString("Statistik Sidang e-TA (" + b.Bulan + ")\n\n")
+		sb.WriteString("- Seminar Proposal: " + strconv.Itoa(b.Sempro) + " orang\n")
+		sb.WriteString("- Seminar Hasil: " + strconv.Itoa(b.Semhas) + " orang\n")
+		sb.WriteString("- Pendadaran: " + strconv.Itoa(b.Pendadaran) + " orang\n")
+		sb.WriteString("------------------------------\n")
+		sb.WriteString("Total Sidang: " + strconv.Itoa(b.Total) + " orang\n\n")
+
+		if len(b.JadwalList) > 0 {
+			sb.WriteString("Daftar Sidang Bulan Ini (" + strconv.Itoa(len(b.JadwalList)) + "):\n")
+			for i, j := range b.JadwalList {
+				if i >= 6 {
+					sb.WriteString("...dan " + strconv.Itoa(len(b.JadwalList)-6) + " sidang lainnya.\n")
+					break
+				}
+				name := strings.Split(j.Title, " - ")[0]
+				tgl := j.Tanggal
+				if len(tgl) >= 10 {
+					tgl = tgl[8:10] + "/" + tgl[5:7]
+				}
+				sb.WriteString(strconv.Itoa(i+1) + ". " + tgl + " -- " + name + " (" + j.Jenis + ")\n")
+			}
+		}
+		sb.WriteString("\nContoh lain: /statistik oktober atau /statistik 2026")
+		return sb.String()
+	}
+
+	if res.TargetTahun != nil {
+		y := res.TargetTahun
+		sb.WriteString("Statistik Sidang e-TA Tahun " + y.Tahun + "\n\n")
+		sb.WriteString("Total: " + strconv.Itoa(y.Total) + " orang\n")
+		sb.WriteString("- Seminar Proposal: " + strconv.Itoa(y.Sempro) + " orang\n")
+		sb.WriteString("- Seminar Hasil: " + strconv.Itoa(y.Semhas) + " orang\n")
+		sb.WriteString("- Pendadaran: " + strconv.Itoa(y.Pendadaran) + " orang\n\n")
+		sb.WriteString("Rincian per Bulan:\n")
+		for _, m := range y.BulanList {
+			sb.WriteString("- " + m.Bulan + ": " + strconv.Itoa(m.Total) + " (Sempro: " + strconv.Itoa(m.Sempro) + ", Semhas: " + strconv.Itoa(m.Semhas) + ", Pdd: " + strconv.Itoa(m.Pendadaran) + ")\n")
+		}
+		return sb.String()
+	}
+
+	sb.WriteString("Statistik Keseluruhan Sidang e-TA\n\n")
+	sb.WriteString("Total Tercatat: " + strconv.Itoa(res.TotalSemua) + " orang\n")
+	sb.WriteString("- Seminar Proposal: " + strconv.Itoa(res.Global.Sempro) + " orang\n")
+	sb.WriteString("- Seminar Hasil: " + strconv.Itoa(res.Global.Semhas) + " orang\n")
+	sb.WriteString("- Pendadaran: " + strconv.Itoa(res.Global.Pendadaran) + " orang\n")
+	sb.WriteString("- Menunggu Ruang: " + strconv.Itoa(res.Global.BelumTerjadwal) + " orang\n")
+	return sb.String()
+}
+
+// tanganiDetail: /detail <token/NIM/nama>
+func tanganiDetail(arg string) string {
+	q := strings.TrimSpace(arg)
+	if q == "" {
+		return "Format: /detail <NIM atau Nama atau Token>\nContoh:\n/detail 2209106054\n/detail Renaldi"
+	}
+	if !eta.TryAcquire() {
+		return "Bot sedang memproses permintaan lain, coba lagi beberapa detik."
+	}
+	defer eta.Release()
+
+	token := q
+	if !strings.HasPrefix(token, "eyJ") && len(token) < 50 {
+		mhsRes, err := eta.FetchMahasiswa(q)
+		if err != nil || len(mhsRes.Matches) == 0 {
+			return "Mahasiswa '" + q + "' tidak ditemukan."
+		}
+		top := mhsRes.Matches[0]
+		if len(top.RiwayatSidang) == 0 {
+			return "Mahasiswa " + top.Nama + " belum memiliki token sidang terdaftar."
+		}
+		token = top.RiwayatSidang[len(top.RiwayatSidang)-1].Token
+	}
+
+	d, err := eta.FetchDetailSidang(token)
+	if err != nil {
+		return "Gagal mengambil detail sidang: " + err.Error()
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Detail Sidang e-TA\n\n")
+	sb.WriteString("Judul Tugas Akhir:\n" + d.Judul + "\n\n")
+	sb.WriteString("Data Peserta:\n")
+	sb.WriteString("- Nama: " + d.Peserta.Nama + "\n")
+	sb.WriteString("- NIM: " + d.Peserta.NIM + "\n")
+	if d.Peserta.Prodi != "" {
+		sb.WriteString("- Prodi: " + d.Peserta.Prodi + "\n")
+	}
+	sb.WriteString("\nJadwal Pelaksanaan:\n")
+	sb.WriteString("- Tahap: " + d.JenisTA + "\n")
+	sb.WriteString("- Waktu: " + d.Jadwal.Tanggal + " (" + d.Jadwal.Jam + ")\n")
+	sb.WriteString("- Ruang: " + d.Jadwal.Ruang + "\n")
+	if d.Jadwal.Kapasitas != "" {
+		sb.WriteString("- Kapasitas: " + d.Jadwal.Kapasitas + "\n")
+	}
+	if d.ProgressBimbingan != "" {
+		sb.WriteString("- Progress: " + d.ProgressBimbingan + "\n")
+	}
+
+	sb.WriteString("\nTim Penilai:\n")
+	for _, p := range d.Penilai {
+		sb.WriteString("- " + p.Peran + ": " + p.Nama + "\n")
+		if p.NIP != "" {
+			sb.WriteString("  NIP: " + p.NIP + " | Prodi: " + p.Prodi + "\n")
+		}
+	}
+
+	if len(d.Peserta.DaftarHadir) > 0 {
+		sb.WriteString("\nMahasiswa Terdaftar Ikut Hadir (" + strconv.Itoa(len(d.Peserta.DaftarHadir)) + " orang):\n")
+		for i, h := range d.Peserta.DaftarHadir {
+			sb.WriteString(strconv.Itoa(i+1) + ". " + h.Nama)
+			if h.NIM != "" {
+				sb.WriteString(" (" + h.NIM + ")")
+			}
+			sb.WriteString("\n")
+		}
+	} else if d.Peserta.JumlahPeserta != "" && d.Peserta.JumlahPeserta != "0" {
+		sb.WriteString("\nJumlah Mahasiswa Terdaftar Hadir: " + d.Peserta.JumlahPeserta + " orang\n")
+	} else {
+		sb.WriteString("\nMahasiswa Terdaftar Ikut Hadir: Belum ada yang mendaftar\n")
+	}
+
+	return sb.String()
+}

@@ -210,6 +210,228 @@ class EtaService {
     const { parseGenericRows } = require('./parsers');
     return parseGenericRows(html);
   }
+
+  /**
+   * Cari informasi mahasiswa lengkap: judul TA, dosen pembimbing & penguji,
+   * serta riwayat semua sidang (Sempro, Semhas, Pendadaran).
+   * @param {string} query - Nama atau NIM mahasiswa.
+   */
+  async cariMahasiswa(query = '') {
+    const q = String(query || '').trim();
+    if (!q) return { query: '', total: 0, matches: [] };
+
+    await this._ensure();
+    const qLower = q.toLowerCase();
+
+    // 1. Ambil data judul skripsi & jadwal dashboard secara paralel
+    const [judulData, dashData] = await Promise.all([
+      this.judulSkripsi({ q }),
+      this.dashboard(),
+    ]);
+
+    const allJadwal = dashData.jadwal || [];
+    const candidateMap = new Map();
+
+    const findSchedulesForName = (nama) => {
+      const nLower = String(nama || '').trim().toLowerCase();
+      if (!nLower) return [];
+      return allJadwal.filter((j) => {
+        const titleName = (j.title || '').split(' - ')[0].trim().toLowerCase();
+        return titleName.includes(nLower) || nLower.includes(titleName);
+      });
+    };
+
+    const sortSchedules = (schedules) => {
+      const typeWeight = {
+        'Seminar Proposal': 1,
+        'Seminar Hasil': 2,
+        'Pendadaran': 3,
+      };
+      return [...schedules].sort((a, b) => {
+        const tA = a.tanggal || '9999-99-99';
+        const tB = b.tanggal || '9999-99-99';
+        if (tA !== tB) return tA.localeCompare(tB);
+        const wA = typeWeight[a.jenis] || 99;
+        const wB = typeWeight[b.jenis] || 99;
+        return wA - wB;
+      });
+    };
+
+    const formatScheduleItem = (j) => {
+      const parts = (j.title || '').split(' - ');
+      const ruang = parts.length > 1 ? parts.slice(1).join(' - ').trim() : null;
+      return {
+        jenis: j.jenis,
+        tanggal: j.tanggal || null,
+        jam: j.jam || null,
+        jamSelesai: j.jamSelesai || null,
+        ruang: ruang,
+        token: j.token,
+      };
+    };
+
+    // 2. Masukkan data dari judul skripsi
+    for (const item of (judulData.daftar || [])) {
+      const key = item.nim || item.nama.toLowerCase();
+      const rawSchedules = findSchedulesForName(item.nama);
+      const sortedSchedules = sortSchedules(rawSchedules).map(formatScheduleItem);
+
+      candidateMap.set(key, {
+        nama: item.nama,
+        nim: item.nim,
+        judul: item.judul,
+        dosen: item.dosen || {},
+        batasWaktu: item.batasWaktu,
+        riwayatSidang: sortedSchedules,
+      });
+    }
+
+    // 3. Masukkan data dari jadwal dashboard jika belum ada di candidateMap
+    for (const j of allJadwal) {
+      const titleName = (j.title || '').split(' - ')[0].trim();
+      if (!titleName) continue;
+      if (titleName.toLowerCase().includes(qLower)) {
+        const key = titleName.toLowerCase();
+        const exists = Array.from(candidateMap.values()).some((c) =>
+          c.nama.toLowerCase() === titleName.toLowerCase()
+        );
+        if (!exists) {
+          const rawSchedules = findSchedulesForName(titleName);
+          const sortedSchedules = sortSchedules(rawSchedules).map(formatScheduleItem);
+          candidateMap.set(key, {
+            nama: titleName,
+            nim: null,
+            judul: null,
+            dosen: {},
+            batasWaktu: null,
+            riwayatSidang: sortedSchedules,
+          });
+        }
+      }
+    }
+
+    const matches = Array.from(candidateMap.values());
+
+    // 4. Jika hanya 1 match dan nim/judul masih null, lengkapi via detailSidang
+    if (matches.length === 1 && (!matches[0].nim || !matches[0].judul)) {
+      const firstEvent = matches[0].riwayatSidang[0];
+      if (firstEvent && firstEvent.token) {
+        try {
+          const detail = await this.detailSidang(firstEvent.token);
+          if (detail.peserta && detail.peserta.nim) matches[0].nim = detail.peserta.nim;
+          if (detail.peserta && detail.peserta.prodi) matches[0].prodi = detail.peserta.prodi;
+          if (detail.judul) matches[0].judul = detail.judul;
+          if (detail.penilai && detail.penilai.length) {
+            const dosenObj = {};
+            detail.penilai.forEach((p) => {
+              const roleKey = (p.peran || '').toLowerCase().replace(/\s+/g, '_');
+              dosenObj[roleKey] = { nama: p.nama, nip: p.nip, prodi: p.prodi };
+            });
+            matches[0].dosen = dosenObj;
+          }
+        } catch (_) {}
+      }
+    }
+
+    return { query: q, total: matches.length, matches };
+  }
+
+  /**
+   * Hitung data statistik sidang: berapa orang Sempro, Semhas, dan Pendadaran.
+   * @param {object} opts - { bulan, tahun }
+   */
+  async statistikSidang({ bulan = '', tahun = '' } = {}) {
+    await this._ensure();
+    const dash = await this.dashboard();
+    const jadwal = dash.jadwal || [];
+
+    const monthlyMap = new Map();
+    let totalSempro = 0;
+    let totalSemhas = 0;
+    let totalPdd = 0;
+    let belumTerjadwal = 0;
+
+    for (const item of jadwal) {
+      const isSempro = item.jenis === 'Seminar Proposal';
+      const isSemhas = item.jenis === 'Seminar Hasil';
+      const isPdd = item.jenis === 'Pendadaran';
+
+      if (isSempro) totalSempro++;
+      else if (isSemhas) totalSemhas++;
+      else if (isPdd) totalPdd++;
+
+      const ym = (item.tanggal || '').slice(0, 7);
+      if (!ym) {
+        belumTerjadwal++;
+        continue;
+      }
+
+      if (!monthlyMap.has(ym)) {
+        monthlyMap.set(ym, {
+          bulan: ym,
+          sempro: 0,
+          semhas: 0,
+          pendadaran: 0,
+          total: 0,
+          jadwalList: [],
+        });
+      }
+      const entry = monthlyMap.get(ym);
+      entry.total++;
+      if (isSempro) entry.sempro++;
+      else if (isSemhas) entry.semhas++;
+      else if (isPdd) entry.pendadaran++;
+      entry.jadwalList.push({
+        title: item.title,
+        tanggal: item.tanggal,
+        jam: item.jam,
+        jenis: item.jenis,
+        token: item.token,
+      });
+    }
+
+    const sortedMonths = Array.from(monthlyMap.values()).sort((a, b) => b.bulan.localeCompare(a.bulan));
+
+    let targetMonthData = null;
+    let targetYearData = null;
+
+    if (bulan) {
+      targetMonthData = sortedMonths.find((m) => m.bulan === bulan) || {
+        bulan,
+        sempro: 0,
+        semhas: 0,
+        pendadaran: 0,
+        total: 0,
+        jadwalList: [],
+      };
+    }
+
+    if (tahun) {
+      const yearMonths = sortedMonths.filter((m) => m.bulan.startsWith(tahun));
+      targetYearData = {
+        tahun,
+        sempro: yearMonths.reduce((sum, m) => sum + m.sempro, 0),
+        semhas: yearMonths.reduce((sum, m) => sum + m.semhas, 0),
+        pendadaran: yearMonths.reduce((sum, m) => sum + m.pendadaran, 0),
+        total: yearMonths.reduce((sum, m) => sum + m.total, 0),
+        bulanList: yearMonths,
+      };
+    }
+
+    return {
+      totalSemua: jadwal.length,
+      global: {
+        sempro: totalSempro,
+        semhas: totalSemhas,
+        pendadaran: totalPdd,
+        belumTerjadwal,
+        totalTerjadwal: jadwal.length - belumTerjadwal,
+      },
+      perBulan: sortedMonths,
+      targetBulan: targetMonthData,
+      targetTahun: targetYearData,
+    };
+  }
 }
 
 module.exports = { EtaService };

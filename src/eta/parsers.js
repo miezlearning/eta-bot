@@ -158,12 +158,32 @@ function parseInformasiSkripsi(html) {
   });
   out.penilai = penilai;
 
-  // 6. Info peserta (mahasiswa yang bersidang)
+  // 6. Info peserta (mahasiswa yang bersidang & daftar hadir penonton)
+  const daftarHadir = [];
+  $('a[data-toggle="image-preview"]').each((i, el) => {
+    const raw = ($(el).attr('data-title') || '').replace(/\s+/g, ' ').trim();
+    const match = raw.match(/^(\d{10})\s+(.+)$/);
+    if (match) {
+      daftarHadir.push({
+        nim: match[1],
+        nama: match[2].trim(),
+        foto: $(el).attr('data-image-preview') || null,
+      });
+    } else if (raw.trim()) {
+      daftarHadir.push({
+        nim: null,
+        nama: raw.trim(),
+        foto: $(el).attr('data-image-preview') || null,
+      });
+    }
+  });
+
   const peserta = {
     nama: clean($('p.lead.strong.margin-none').first()) || null,
     nim: clean($('p.lead:not(.strong)').first()) || null,
     prodi: clean($('.label-success strong').first()) || null,
     jumlahPeserta: clean($('.badge.bg-warning').first()) || null,
+    daftarHadir,
   };
   out.peserta = peserta;
 

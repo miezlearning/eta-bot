@@ -237,19 +237,23 @@ vercel.json      # Konfigurasi Vercel (timeout & memory)
 scripts/setWebhook.js   # Skrip daftarkan webhook ke Telegram
 ```
 
-### Command bot yang tersedia
+### Command bot yang tersedia (Telegram & WhatsApp)
 
-| Command | Fungsi |
-|---------|--------|
-| `/start`, `/help` | Menampilkan bantuan |
-| `/jadwal` | Jadwal sidang hari ini |
-| `/jadwal besok` | Jadwal sidang besok |
-| `/jadwal lusa` | Jadwal sidang lusa |
-| `/jadwal senin` (dst.) | Jadwal hari tertentu terdekat |
-| `/jadwal 2026-11-12` | Jadwal tanggal tertentu |
-| `/jadwal semua` | Total semua jadwal |
-| `/judul <kata kunci>` | Cari judul skripsi |
-| `/status` | Cek status server API & session e-TA |
+| Command | Fungsi | Contoh |
+|---------|--------|--------|
+| `/start`, `/help` | Menampilkan bantuan & daftar perintah lengkap | `/help` |
+| `/mhs <nama/NIM>` | Info lengkap mahasiswa: judul TA, dosen pembimbing & penguji, serta riwayat tanggal sempro, semhas, & pendadaran | `/mhs renaldi` atau `/mhs 2209106054` |
+| `/judul <kata kunci>` | Cari judul skripsi, nama mahasiswa, & dosen penilai | `/judul artificial intelligence` |
+| `/detail <NIM/token>` | Rincian ruang sidang, kapasitas, peserta, & SK tim penilai | `/detail 2209106054` |
+| `/statistik` | Statistik jumlah orang Sempro, Semhas, & Pendadaran bulan ini | `/statistik` |
+| `/statistik <bln/thn>` | Statistik sidang periode tertentu | `/statistik november`, `/statistik 2026-06`, `/statistik 2026` |
+| `/jadwal` | Jadwal sidang hari ini | `/jadwal` |
+| `/jadwal besok` | Jadwal sidang besok | `/jadwal besok` |
+| `/jadwal lusa` | Jadwal sidang lusa | `/jadwal lusa` |
+| `/jadwal senin` (dst.) | Jadwal hari tertentu terdekat | `/jadwal kamis` |
+| `/jadwal <tanggal>` | Jadwal tanggal tertentu | `/jadwal 2026-11-23` |
+| `/jadwal semua` | Total semua jadwal sidang | `/jadwal semua` |
+| `/status` | Cek status server API & session e-TA | `/status` |
 
 ### Langkah deploy
 
@@ -309,17 +313,21 @@ wa-bot/
 └── .env.example    # Template konfigurasi (E_TA_API_BASE, WA_DB, WA_PAIR_PHONE, ...)
 ```
 
-### Command bot (paritas dengan bot Telegram)
+### Command bot WhatsApp (paritas penuh dengan bot Telegram)
 
 | Perintah | Hasil |
 |----------|-------|
+| `/mhs <nama/NIM>` | Info mahasiswa: judul TA, dosen pembimbing & penguji, serta riwayat sempro/semhas/pdd |
+| `/judul <kata kunci>` | Cari judul skripsi, mahasiswa, & dosen penilai |
+| `/detail <NIM/token>` | Rincian ruang, kapasitas, peserta, & SK penilai sidang |
+| `/statistik [periode]` | Statistik berapa orang sempro, semhas, & pendadaran |
 | `/jadwal` | Jadwal sidang hari ini |
 | `/jadwal besok` / `lusa` / `kemarin` | Jadwal tanggal relatif |
 | `/jadwal kamis` (dst.) | Jadwal hari tersebut di pekan mendatang |
-| `/jadwal 2026-11-12` atau `/jadwal 12/11` | Jadwal tanggal spesifik |
+| `/jadwal 2026-11-23` atau `/jadwal 23/11` | Jadwal tanggal spesifik |
 | `/jadwal semua` | Ringkasan total + 5 jadwal berikutnya |
-| `/judul <kata kunci>` | Cari judul skripsi (maks 10 hasil) |
 | `/status` | Status koneksi API e-TA |
+| `/help` | Menu bantuan perintah |
 
 ### Cara jalan (lokal — butuh proses persisten)
 

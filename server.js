@@ -153,6 +153,24 @@ app.get('/api/ruang', asyncHandler(async (req, res) => {
   res.json(data);
 }));
 
+// --- Cari data mahasiswa lengkap (judul, dosen, timeline sidang sempro/semhas/pdd) ---
+app.get('/api/mahasiswa', asyncHandler(async (req, res) => {
+  const q = req.query.q || req.query.nama || req.query.nim || '';
+  const data = await svc.cariMahasiswa(q);
+  res.json(data);
+}));
+app.get('/api/mahasiswa/:query', asyncHandler(async (req, res) => {
+  const data = await svc.cariMahasiswa(req.params.query);
+  res.json(data);
+}));
+
+// --- Data statistik sidang (jumlah sempro, semhas, pendadaran per bulan/tahun) ---
+app.get('/api/statistik', asyncHandler(async (req, res) => {
+  const { bulan, tahun } = req.query;
+  const data = await svc.statistikSidang({ bulan, tahun });
+  res.json(data);
+}));
+
 // --- Root ---
 app.get('/', (req, res) => {
   res.json({
@@ -162,6 +180,8 @@ app.get('/', (req, res) => {
       dashboard: '/api/dashboard',
       'jadwal (search)': '/api/jadwal/sidang?nama=&nim=&prodi=&q=&enrich=',
       'judul (search)': '/api/judul-skripsi?nama=&nim=&q=',
+      'mahasiswa (detail & timeline)': '/api/mahasiswa?q= (atau /api/mahasiswa/:query)',
+      'statistik sidang': '/api/statistik?bulan=YYYY-MM&tahun=YYYY',
       'data proposal': '/api/data/proposal',
       'data hasil': '/api/data/hasil',
       'data pendadaran': '/api/data/pendadaran',
