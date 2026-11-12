@@ -147,6 +147,21 @@ func tanganiStatus() string {
 	return sb.String()
 }
 
+// splitArgAndPage memisahkan kata kunci pencarian dengan nomor halaman di akhir (misal "D209 2" -> "D209", 2).
+func splitArgAndPage(arg string) (string, int) {
+	fields := strings.Fields(strings.TrimSpace(arg))
+	if len(fields) > 1 {
+		last := fields[len(fields)-1]
+		if len(last) <= 3 {
+			if p, err := strconv.Atoi(last); err == nil && p >= 1 {
+				query := strings.Join(fields[:len(fields)-1], " ")
+				return query, p
+			}
+		}
+	}
+	return strings.TrimSpace(arg), 1
+}
+
 // tanganiJadwal menampilkan jadwal sesuai argumen (besok/senin/tanggal/dll).
 func tanganiJadwal(arg string) string {
 	// Lindungi e-TA: hanya 1 fetch berjalan sekaligus.
@@ -163,13 +178,14 @@ func tanganiJadwal(arg string) string {
 		return "Tidak ada jadwal sidang terdaftar saat ini."
 	}
 
-	raw := strings.ToLower(strings.TrimSpace(arg))
+	q, page := splitArgAndPage(arg)
+	raw := strings.ToLower(strings.TrimSpace(q))
 	if raw == "" {
 		raw = "hari ini"
 	}
 
 	if raw == "semua" || raw == "all" {
-		return buatRingkasanSemua(daftar)
+		return buatRingkasanSemua(daftar, page)
 	}
 
 	target, ok := tglDariArgumen(raw)
@@ -181,8 +197,8 @@ func tanganiJadwal(arg string) string {
 	return formatJadwalHarian(target, isi, iden, len(daftar))
 }
 
-// buatRingkasanSemua: total + breakdown jenis + 5 jadwal berikutnya.
-func buatRingkasanSemua(daftar []jadwalItem) string {
+// buatRingkasanSemua: total + breakdown jenis + jadwal mendatang dengan pagination.
+func buatRingkasanSemua(daftar []jadwalItem, page int) string {
 	hitung := map[string]int{}
 	for _, it := range daftar {
 		hitung[it.Jenis]++
@@ -203,10 +219,28 @@ func buatRingkasanSemua(daftar []jadwalItem) string {
 		return berikut[i].Jam < berikut[j].Jam
 	})
 
+	const pageSize = 6
+	totalMendatang := len(berikut)
+	totalPages := (totalMendatang + pageSize - 1) / pageSize
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	if page < 1 {
+		page = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	start := (page - 1) * pageSize
+	end := start + pageSize
+	if end > totalMendatang {
+		end = totalMendatang
+	}
+
 	var sb strings.Builder
-	sb.WriteString("Ringkasan jadwal sidang e-TA\n\n")
-	sb.WriteString("Total: " + strconv.Itoa(len(daftar)) + " jadwal\n")
-	sb.WriteString("Mendatang: " + strconv.Itoa(len(berikut)) + " jadwal\n")
+	sb.WriteString("Ringkasan Jadwal Sidang FT Unmul\n\n")
+	sb.WriteString("Total Terdata: " + strconv.Itoa(len(daftar)) + " jadwal\n")
+	sb.WriteString("Mendatang: " + strconv.Itoa(totalMendatang) + " jadwal\n\n")
 
 	for _, jenis := range []string{"Seminar Proposal", "Seminar Hasil", "Pendadaran"} {
 		if hitung[jenis] > 0 {
@@ -214,51 +248,85 @@ func buatRingkasanSemua(daftar []jadwalItem) string {
 		}
 	}
 
-	sb.WriteString("\n5 jadwal berikutnya:\n")
-	for i, it := range berikut {
-		if i == 5 {
-			sb.WriteString("\n...dan " + strconv.Itoa(len(berikut)-5) + " jadwal lagi. Contoh: /jadwal " + berikut[5].Tanggal)
-			break
+	sb.WriteString("\nJadwal Mendatang (Hal " + strconv.Itoa(page) + " dari " + strconv.Itoa(totalPages) + "):\n")
+	for i, it := range berikut[start:end] {
+		num := start + i + 1
+		sb.WriteString(strconv.Itoa(num) + ". " + formatTanggalPendek(it.Tanggal) + " " + ringkasJam(it.Jam) + " -- " + it.Title + " (" + it.Jenis + ")\n")
+	}
+
+	if totalPages > 1 {
+		nextPage := page + 1
+		if nextPage > totalPages {
+			nextPage = 1
 		}
-		sb.WriteString("- " + formatTanggalPendek(it.Tanggal) + " " + ringkasJam(it.Jam) + " -- " + it.Title + " (" + it.Jenis + ")\n")
+		sb.WriteString("\nKetik: /jadwal semua " + strconv.Itoa(nextPage) + " untuk halaman berikutnya.\n")
 	}
 	return sb.String()
 }
 
-// tanganiJudul: /judul [kata kunci] -- pencarian judul skripsi (max 10).
+// tanganiJudul: /judul [kata kunci] [halaman] -- pencarian judul skripsi dengan pagination.
 func tanganiJudul(arg string) string {
+	q, page := splitArgAndPage(arg)
 	if !eta.TryAcquire() {
 		return "Bot sedang memproses permintaan lain, coba lagi 10 detik."
 	}
 	defer eta.Release()
 
-	daftar, _, err := eta.FetchJudul(arg)
+	daftar, _, err := eta.FetchJudul(q)
 	if err != nil {
 		return "Gagal mengambil daftar judul dari API e-TA:\n" + err.Error()
 	}
 	if len(daftar) == 0 {
 		hasil := "Tidak ada judul skripsi ditemukan"
-		if strings.TrimSpace(arg) != "" {
-			hasil += " untuk kata kunci: " + arg
+		if q != "" {
+			hasil += " untuk kata kunci: " + q
 		}
 		return hasil
 	}
 
-	var sb strings.Builder
-	sb.WriteString("Pencarian judul skripsi")
-	if strings.TrimSpace(arg) != "" {
-		sb.WriteString(" (kata kunci: " + arg + ")")
+	const pageSize = 5
+	total := len(daftar)
+	totalPages := (total + pageSize - 1) / pageSize
+	if totalPages < 1 {
+		totalPages = 1
 	}
-	sb.WriteString("\nTotal ditemukan: " + strconv.Itoa(len(daftar)) + "\n\n")
+	if page < 1 {
+		page = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	start := (page - 1) * pageSize
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
 
-	const maks = 10
-	for i, it := range daftar {
-		if i == maks {
-			sb.WriteString("\n...dan " + strconv.Itoa(len(daftar)-maks) + " lainnya. Pertajam kata kunci untuk hasil lebih spesifik.")
-			break
-		}
-		sb.WriteString(strconv.Itoa(i+1) + ". " + it.Judul + "\n   -> " + it.Nama + " (" + it.NIM + ")\n")
+	var sb strings.Builder
+	sb.WriteString("Pencarian Judul Skripsi")
+	if q != "" {
+		sb.WriteString(" (kata kunci: " + q + ")")
 	}
+	sb.WriteString("\nTotal: " + strconv.Itoa(total) + " judul | Halaman " + strconv.Itoa(page) + " dari " + strconv.Itoa(totalPages) + "\n\n")
+
+	for i, it := range daftar[start:end] {
+		num := start + i + 1
+		sb.WriteString(strconv.Itoa(num) + ". " + it.Judul + "\n")
+		sb.WriteString("   -> " + it.Nama)
+		if it.NIM != "" {
+			sb.WriteString(" (" + it.NIM + ")")
+		}
+		sb.WriteString("\n")
+	}
+
+	if totalPages > 1 {
+		nextPage := page + 1
+		if nextPage > totalPages {
+			nextPage = 1
+		}
+		sb.WriteString("\nKetik: /judul " + q + " " + strconv.Itoa(nextPage) + " untuk halaman berikutnya.\n")
+	}
+	sb.WriteString("Ketik /mhs <NIM> untuk detail mahasiswa.")
 	return sb.String()
 }
 
@@ -476,11 +544,12 @@ func isAllDigits(s string) bool {
 	return len(s) > 0
 }
 
-// tanganiMahasiswa: /mhs <nama/NIM>
+// tanganiMahasiswa: /mhs <nama/NIM> [halaman]
 func tanganiMahasiswa(arg string) string {
-	q := strings.TrimSpace(arg)
+	q, page := splitArgAndPage(arg)
+	q = strings.TrimSpace(q)
 	if q == "" {
-		return "Format: /mhs <nama atau NIM>\nContoh:\n/mhs Renaldi\n/mhs 2209106054"
+		return "Format: /mhs <nama atau NIM> [halaman]\nContoh:\n/mhs Renaldi\n/mhs 2209106054\n/mhs Muhammad 2"
 	}
 	if !eta.TryAcquire() {
 		return "Bot sedang memproses permintaan lain, coba lagi beberapa detik."
@@ -492,13 +561,13 @@ func tanganiMahasiswa(arg string) string {
 		return "Gagal mencari data mahasiswa: " + err.Error()
 	}
 	if res.Total == 0 || len(res.Matches) == 0 {
-		return "Mahasiswa dengan kata kunci '" + q + "' tidak ditemukan di sistem e-TA.\nTips: Pastikan ejaan nama benar atau gunakan NIM lengkap."
+		return "Mahasiswa dengan kata kunci '" + q + "' tidak ditemukan di sistem e-TA / e-Room.\nTips: Pastikan ejaan nama benar atau gunakan NIM lengkap."
 	}
 
 	if res.Total == 1 {
 		m := res.Matches[0]
 		var sb strings.Builder
-		sb.WriteString("Data Mahasiswa & Tugas Akhir e-TA\n\n")
+		sb.WriteString("Data Mahasiswa & Tugas Akhir FT Unmul\n\n")
 		sb.WriteString("Nama: " + m.Nama + "\n")
 		sb.WriteString("NIM: " + m.NIM + "\n")
 		if m.Prodi != "" {
@@ -563,16 +632,33 @@ func tanganiMahasiswa(arg string) string {
 		return sb.String()
 	}
 
-	// Multiple matches
+	// Multiple matches with pagination
+	const pageSize = 5
+	total := len(res.Matches)
+	totalPages := (total + pageSize - 1) / pageSize
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	if page < 1 {
+		page = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	start := (page - 1) * pageSize
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+
 	var sb strings.Builder
-	sb.WriteString("Ditemukan " + strconv.Itoa(res.Total) + " mahasiswa untuk kata kunci '" + q + "':\n\n")
-	maks := 8
-	for i, m := range res.Matches {
-		if i >= maks {
-			sb.WriteString("...dan " + strconv.Itoa(res.Total-maks) + " mahasiswa lainnya. Masukkan NIM untuk hasil spesifik.\n\n")
-			break
+	sb.WriteString("Ditemukan " + strconv.Itoa(res.Total) + " mahasiswa untuk kata kunci '" + q + "' (Hal " + strconv.Itoa(page) + " dari " + strconv.Itoa(totalPages) + "):\n\n")
+	for i, m := range res.Matches[start:end] {
+		num := start + i + 1
+		sb.WriteString(strconv.Itoa(num) + ". " + m.Nama + " (" + m.NIM + ")\n")
+		if m.Prodi != "" {
+			sb.WriteString("   Prodi: " + m.Prodi + "\n")
 		}
-		sb.WriteString(strconv.Itoa(i+1) + ". " + m.Nama + " (" + m.NIM + ")\n")
 		if m.Judul != "" {
 			jdl := m.Judul
 			if len(jdl) > 60 {
@@ -582,12 +668,20 @@ func tanganiMahasiswa(arg string) string {
 		}
 	}
 	sb.WriteString("\nKetik: /mhs <NIM> untuk melihat detail lengkap.")
+	if totalPages > 1 {
+		nextPage := page + 1
+		if nextPage > totalPages {
+			nextPage = 1
+		}
+		sb.WriteString("\nKetik: /mhs " + q + " " + strconv.Itoa(nextPage) + " untuk halaman berikutnya.")
+	}
 	return sb.String()
 }
 
-// tanganiStatistik: /statistik [bulan/tahun]
+// tanganiStatistik: /statistik [bulan/tahun] [halaman]
 func tanganiStatistik(arg string) string {
-	raw := strings.TrimSpace(arg)
+	rawQuery, page := splitArgAndPage(arg)
+	raw := strings.TrimSpace(rawQuery)
 	if !eta.TryAcquire() {
 		return "Bot sedang memproses permintaan lain, coba lagi beberapa detik."
 	}
@@ -635,7 +729,7 @@ func tanganiStatistik(arg string) string {
 	var sb strings.Builder
 	if res.TargetBulan != nil {
 		b := res.TargetBulan
-		sb.WriteString("Statistik Sidang e-TA (" + b.Bulan + ")\n\n")
+		sb.WriteString("Statistik Sidang FT Unmul (" + b.Bulan + ")\n\n")
 		sb.WriteString("- Seminar Proposal: " + strconv.Itoa(b.Sempro) + " orang\n")
 		sb.WriteString("- Seminar Hasil: " + strconv.Itoa(b.Semhas) + " orang\n")
 		sb.WriteString("- Pendadaran: " + strconv.Itoa(b.Pendadaran) + " orang\n")
@@ -643,18 +737,43 @@ func tanganiStatistik(arg string) string {
 		sb.WriteString("Total Sidang: " + strconv.Itoa(b.Total) + " orang\n\n")
 
 		if len(b.JadwalList) > 0 {
-			sb.WriteString("Daftar Sidang Bulan Ini (" + strconv.Itoa(len(b.JadwalList)) + "):\n")
-			for i, j := range b.JadwalList {
-				if i >= 6 {
-					sb.WriteString("...dan " + strconv.Itoa(len(b.JadwalList)-6) + " sidang lainnya.\n")
-					break
-				}
+			const pageSize = 6
+			totalList := len(b.JadwalList)
+			totalPages := (totalList + pageSize - 1) / pageSize
+			if totalPages < 1 {
+				totalPages = 1
+			}
+			if page < 1 {
+				page = 1
+			}
+			if page > totalPages {
+				page = totalPages
+			}
+			start := (page - 1) * pageSize
+			end := start + pageSize
+			if end > totalList {
+				end = totalList
+			}
+
+			sb.WriteString("Daftar Sidang (" + strconv.Itoa(totalList) + " jadwal, Hal " + strconv.Itoa(page) + " dari " + strconv.Itoa(totalPages) + "):\n")
+			for i, j := range b.JadwalList[start:end] {
 				name := strings.Split(j.Title, " - ")[0]
 				tgl := j.Tanggal
 				if len(tgl) >= 10 {
 					tgl = tgl[8:10] + "/" + tgl[5:7]
 				}
-				sb.WriteString(strconv.Itoa(i+1) + ". " + tgl + " -- " + name + " (" + j.Jenis + ")\n")
+				sb.WriteString(strconv.Itoa(start+i+1) + ". " + tgl + " -- " + name + " (" + j.Jenis + ")\n")
+			}
+			if totalPages > 1 {
+				nextPage := page + 1
+				if nextPage > totalPages {
+					nextPage = 1
+				}
+				queryLabel := raw
+				if queryLabel == "" {
+					queryLabel = b.Bulan
+				}
+				sb.WriteString("\nKetik: /statistik " + queryLabel + " " + strconv.Itoa(nextPage) + " untuk halaman berikutnya.\n")
 			}
 		}
 		sb.WriteString("\nContoh lain: /statistik oktober atau /statistik 2026")
@@ -663,7 +782,7 @@ func tanganiStatistik(arg string) string {
 
 	if res.TargetTahun != nil {
 		y := res.TargetTahun
-		sb.WriteString("Statistik Sidang e-TA Tahun " + y.Tahun + "\n\n")
+		sb.WriteString("Statistik Sidang FT Unmul Tahun " + y.Tahun + "\n\n")
 		sb.WriteString("Total: " + strconv.Itoa(y.Total) + " orang\n")
 		sb.WriteString("- Seminar Proposal: " + strconv.Itoa(y.Sempro) + " orang\n")
 		sb.WriteString("- Seminar Hasil: " + strconv.Itoa(y.Semhas) + " orang\n")
@@ -675,7 +794,7 @@ func tanganiStatistik(arg string) string {
 		return sb.String()
 	}
 
-	sb.WriteString("Statistik Keseluruhan Sidang e-TA\n\n")
+	sb.WriteString("Statistik Keseluruhan Sidang FT Unmul\n\n")
 	sb.WriteString("Total Tercatat: " + strconv.Itoa(res.TotalSemua) + " orang\n")
 	sb.WriteString("- Seminar Proposal: " + strconv.Itoa(res.Global.Sempro) + " orang\n")
 	sb.WriteString("- Seminar Hasil: " + strconv.Itoa(res.Global.Semhas) + " orang\n")
@@ -759,9 +878,10 @@ func tanganiDetail(arg string) string {
 	return sb.String()
 }
 
-// tanganiEroom: /eroom [kata kunci/ruang/nama]
+// tanganiEroom: /eroom [kata kunci/ruang/nama] [halaman]
 func tanganiEroom(arg string) string {
-	q := strings.TrimSpace(arg)
+	q, page := splitArgAndPage(arg)
+	q = strings.TrimSpace(q)
 	if !eta.TryAcquire() {
 		return "Bot sedang memproses permintaan lain, coba lagi beberapa detik."
 	}
@@ -779,19 +899,33 @@ func tanganiEroom(arg string) string {
 		return pesan
 	}
 
+	const pageSize = 6
+	total := len(res.Jadwal)
+	totalPages := (total + pageSize - 1) / pageSize
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	if page < 1 {
+		page = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	start := (page - 1) * pageSize
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+
 	var sb strings.Builder
 	sb.WriteString("Jadwal Seminar e-Room FT Unmul")
 	if q != "" {
-		sb.WriteString(" (Pencarian: " + q + ")")
+		sb.WriteString(" (" + q + ")")
 	}
-	sb.WriteString("\nTotal: " + strconv.Itoa(res.Total) + " agenda\n\n")
+	sb.WriteString("\nTotal: " + strconv.Itoa(res.Total) + " agenda (Hal " + strconv.Itoa(page) + " dari " + strconv.Itoa(totalPages) + ")\n\n")
 
-	const max = 8
-	for i, j := range res.Jadwal {
-		if i == max {
-			sb.WriteString("\n...dan " + strconv.Itoa(len(res.Jadwal)-max) + " agenda lainnya.\n")
-			break
-		}
+	for i, j := range res.Jadwal[start:end] {
+		num := start + i + 1
 		tgl := j.Tanggal
 		if tgl == "" {
 			tgl = "Belum terjadwal"
@@ -804,10 +938,21 @@ func tanganiEroom(arg string) string {
 			}
 			jam += ")"
 		}
-		sb.WriteString(strconv.Itoa(i+1) + ". " + j.Nama + "\n")
+		sb.WriteString(strconv.Itoa(num) + ". " + j.Nama + "\n")
 		sb.WriteString("   Ruang: " + j.Ruang + " | Tahap: " + j.Jenis + "\n")
 		sb.WriteString("   Waktu: " + tgl + jam + "\n")
 	}
-	sb.WriteString("\nKetik /detail <nama/NIM> untuk melihat dosen & audiens hadir.")
+	sb.WriteString("\nKetik /detail <nama/NIM> untuk info dosen & audiens hadir.")
+	if totalPages > 1 {
+		nextPage := page + 1
+		if nextPage > totalPages {
+			nextPage = 1
+		}
+		qParam := q
+		if qParam != "" {
+			qParam += " "
+		}
+		sb.WriteString("\nKetik: /eroom " + qParam + strconv.Itoa(nextPage) + " untuk halaman berikutnya.")
+	}
 	return sb.String()
 }

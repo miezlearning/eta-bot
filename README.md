@@ -159,12 +159,14 @@ Endpoint **jadwal** dan **judul** mendukung filter query-string (semua case-inse
 
 | Param | Berlaku di | Arti |
 |-------|-----------|------|
-| `q` | jadwal & judul | Pencarian bebas pada judul/nama/NIM |
+| `q` | jadwal, judul, mahasiswa, eroom | Pencarian bebas pada judul/nama/NIM/ruang |
 | `nama` | jadwal & judul | Filter nama (substring) |
 | `nim` | jadwal & judul | Filter NIM (substring) |
 | `prodi` | jadwal | Filter prodi. **Otomatis mengaktifkan enrich** bila belum aktif |
 | `enrich` | jadwal | `true`/`1` → tambah field `prodi` per event (tarik dari halaman detail) |
 | `useCache` | jadwal | `false` untuk melewati cache enrich (default `true`) |
+| `page` | jadwal, judul, mahasiswa, eroom, statistik | Nomor halaman pagination (mulai dari 1) |
+| `limit` | jadwal, judul, mahasiswa, eroom, statistik | Jumlah item per halaman (default: 20 di REST API) |
 
 ### Tentang `enrich` & cache
 
@@ -246,18 +248,22 @@ scripts/setWebhook.js   # Skrip daftarkan webhook ke Telegram
 | Command | Fungsi | Contoh |
 |---------|--------|--------|
 | `/start`, `/help` | Menampilkan bantuan & daftar perintah lengkap | `/help` |
-| `/mhs <nama/NIM>` | Info lengkap mahasiswa: judul TA, dosen pembimbing & penguji, serta riwayat tanggal sempro, semhas, & pendadaran | `/mhs renaldi` atau `/mhs 2209106054` |
-| `/judul <kata kunci>` | Cari judul skripsi, nama mahasiswa, & dosen penilai | `/judul artificial intelligence` |
-| `/detail <NIM/token>` | Rincian ruang sidang, kapasitas, peserta, & SK tim penilai | `/detail 2209106054` |
+| `/mhs <nama/NIM> [hal]` | Info lengkap mahasiswa (judul TA, dosen, timeline sidang sempro/semhas/pdd). Didukung pagination inline & text. | `/mhs renaldi` atau `/mhs muhammad 2` |
+| `/judul <kata kunci> [hal]` | Cari judul skripsi, mahasiswa, & dosen penilai (pagination inline button & text) | `/judul sistem informasi 2` |
+| `/detail <NIM/token>` | Rincian ruang sidang, kapasitas, peserta, dosen penilai, & daftar audiens hadir | `/detail 2209106054` |
+| `/eroom [ruang/nama] [hal]` | Jadwal seminar e-room se-Fakultas Teknik (3.300+ data, pagination inline & text) | `/eroom D209 2` |
 | `/statistik` | Statistik jumlah orang Sempro, Semhas, & Pendadaran bulan ini | `/statistik` |
-| `/statistik <bln/thn>` | Statistik sidang periode tertentu | `/statistik november`, `/statistik 2026-06`, `/statistik 2026` |
+| `/statistik <bln/thn> [hal]` | Statistik sidang periode tertentu + pagination daftar peserta | `/statistik oktober 2`, `/statistik 2026` |
 | `/jadwal` | Jadwal sidang hari ini | `/jadwal` |
 | `/jadwal besok` | Jadwal sidang besok | `/jadwal besok` |
 | `/jadwal lusa` | Jadwal sidang lusa | `/jadwal lusa` |
 | `/jadwal senin` (dst.) | Jadwal hari tertentu terdekat | `/jadwal kamis` |
 | `/jadwal <tanggal>` | Jadwal tanggal tertentu | `/jadwal 2026-11-23` |
-| `/jadwal semua` | Total semua jadwal sidang | `/jadwal semua` |
+| `/jadwal semua [hal]` | Ringkasan total & jadwal mendatang dengan pagination | `/jadwal semua 2` |
 | `/status` | Cek status server API & session e-TA | `/status` |
+
+> 💡 **Navigasi Pagination Interaktif di Telegram:**
+> Pada hasil daftar panjang (`/mhs`, `/judul`, `/jadwal semua`, `/eroom`, `/statistik`), bot Telegram menyediakan **Inline Keyboard Buttons** (`⬅️ Prev`, `Hal X/Y`, `Next ➡️`) untuk berpindah halaman secara interaktif langsung di chat tanpa spam pesan baru! Pengguna juga dapat mengetikkan nomor halaman di akhir perintah (misal `/eroom D209 2`).
 
 ### Langkah deploy
 
@@ -321,16 +327,16 @@ wa-bot/
 
 | Perintah | Hasil |
 |----------|-------|
-| `/mhs <nama/NIM>` | Info mahasiswa: judul TA, dosen pembimbing & penguji, serta riwayat sempro/semhas/pdd (e-TA + e-room) |
-| `/judul <kata kunci>` | Cari judul skripsi, mahasiswa, & dosen penilai |
+| `/mhs <nama/NIM> [hal]` | Info mahasiswa: judul TA, dosen pembimbing & penguji, riwayat sempro/semhas/pdd (e-TA + e-room) + pagination |
+| `/judul <kata kunci> [hal]` | Cari judul skripsi, mahasiswa, & dosen penilai (didukung pagination nomor halaman) |
 | `/detail <NIM/token>` | Rincian ruang, kapasitas, SK penilai sidang, & daftar peserta/audiens hadir |
-| `/eroom <ruang/nama>` | Cari jadwal seminar e-room se-Fakultas Teknik (3.000+ agenda) |
-| `/statistik [periode]` | Statistik berapa orang sempro, semhas, & pendadaran (se-FT) |
+| `/eroom [ruang/nama] [hal]` | Cari jadwal seminar e-room se-Fakultas Teknik (3.300+ agenda) + pagination halaman |
+| `/statistik [periode] [hal]` | Statistik berapa orang sempro, semhas, & pendadaran (se-FT) + pagination daftar sidang |
 | `/jadwal` | Jadwal sidang hari ini |
 | `/jadwal besok` / `lusa` / `kemarin` | Jadwal tanggal relatif |
 | `/jadwal kamis` (dst.) | Jadwal hari tersebut di pekan mendatang |
 | `/jadwal 2026-11-23` atau `/jadwal 23/11` | Jadwal tanggal spesifik |
-| `/jadwal semua` | Ringkasan total + 5 jadwal berikutnya |
+| `/jadwal semua [hal]` | Ringkasan total + jadwal mendatang ber-halaman (misal `/jadwal semua 2`) |
 | `/status` | Status koneksi API e-TA |
 | `/help` | Menu bantuan perintah |
 

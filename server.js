@@ -90,9 +90,28 @@ app.get('/api/dashboard', asyncHandler(async (req, res) => {
   res.json(data);
 }));
 
+// Helper pagination untuk API endpoints
+function paginateArray(items, page, limit) {
+  const p = Math.max(1, parseInt(page, 10) || 1);
+  const l = Math.max(1, parseInt(limit, 10) || 20);
+  const total = items.length;
+  const totalPages = Math.ceil(total / l) || 1;
+  const currentPage = Math.min(p, totalPages);
+  const start = (currentPage - 1) * l;
+  return {
+    page: currentPage,
+    limit: l,
+    total,
+    totalPages,
+    hasNext: currentPage < totalPages,
+    hasPrev: currentPage > 1,
+    data: items.slice(start, start + l),
+  };
+}
+
 // --- Jadwal sidang (kalender) ---
 app.get('/api/jadwal/sidang', asyncHandler(async (req, res) => {
-  const { enrich, q, nama, nim, prodi, ruang, tanggal, bulan, tahun, useCache, source } = req.query;
+  const { enrich, q, nama, nim, prodi, ruang, tanggal, bulan, tahun, useCache, source, page, limit } = req.query;
   if (source === 'eta') {
     const data = await svc.jadwalSkripsi({
       enrich: enrich === 'true' || enrich === '1',
@@ -102,6 +121,9 @@ app.get('/api/jadwal/sidang', asyncHandler(async (req, res) => {
       nim: nim || '',
       prodi: prodi || '',
     });
+    if (page) {
+      return res.json(paginateArray(data, page, limit));
+    }
     return res.json(data);
   }
 
@@ -114,18 +136,33 @@ app.get('/api/jadwal/sidang', asyncHandler(async (req, res) => {
     bulan: bulan || '',
     tahun: tahun || '',
   });
+  if (page) {
+    const p = paginateArray(data.jadwal || [], page, limit);
+    return res.json({
+      ...data,
+      page: p.page,
+      limit: p.limit,
+      totalPages: p.totalPages,
+      hasNext: p.hasNext,
+      hasPrev: p.hasPrev,
+      jadwal: p.data,
+    });
+  }
   res.json(data);
 }));
 
 // --- Daftar judul skripsi ---
 app.get('/api/judul-skripsi', asyncHandler(async (req, res) => {
-  const { q, nama, nim, prodi } = req.query;
+  const { q, nama, nim, prodi, page, limit } = req.query;
   const data = await svc.judulSkripsi({
     q: q || '',
     nama: nama || '',
     nim: nim || '',
     prodi: prodi || '',
   });
+  if (page) {
+    return res.json(paginateArray(data, page, limit));
+  }
   res.json(data);
 }));
 
@@ -169,24 +206,65 @@ app.get('/api/ruang', asyncHandler(async (req, res) => {
 // --- Cari data mahasiswa lengkap (judul, dosen, timeline sidang sempro/semhas/pdd) ---
 app.get('/api/mahasiswa', asyncHandler(async (req, res) => {
   const q = req.query.q || req.query.nama || req.query.nim || '';
+  const { page, limit } = req.query;
   const data = await svc.cariMahasiswa(q);
+  if (page && Array.isArray(data.matches)) {
+    const p = paginateArray(data.matches, page, limit);
+    return res.json({
+      ...data,
+      page: p.page,
+      limit: p.limit,
+      totalPages: p.totalPages,
+      hasNext: p.hasNext,
+      hasPrev: p.hasPrev,
+      matches: p.data,
+    });
+  }
   res.json(data);
 }));
 app.get('/api/mahasiswa/:query', asyncHandler(async (req, res) => {
+  const { page, limit } = req.query;
   const data = await svc.cariMahasiswa(req.params.query);
+  if (page && Array.isArray(data.matches)) {
+    const p = paginateArray(data.matches, page, limit);
+    return res.json({
+      ...data,
+      page: p.page,
+      limit: p.limit,
+      totalPages: p.totalPages,
+      hasNext: p.hasNext,
+      hasPrev: p.hasPrev,
+      matches: p.data,
+    });
+  }
   res.json(data);
 }));
 
 // --- Data statistik sidang (jumlah sempro, semhas, pendadaran per bulan/tahun) ---
 app.get('/api/statistik', asyncHandler(async (req, res) => {
-  const { bulan, tahun, source } = req.query;
+  const { bulan, tahun, source, page, limit } = req.query;
   const data = await svc.statistikSidang({ bulan, tahun, source });
+  if (page && data.targetBulan && Array.isArray(data.targetBulan.jadwalList)) {
+    const p = paginateArray(data.targetBulan.jadwalList, page, limit);
+    return res.json({
+      ...data,
+      targetBulan: {
+        ...data.targetBulan,
+        page: p.page,
+        limit: p.limit,
+        totalPages: p.totalPages,
+        hasNext: p.hasNext,
+        hasPrev: p.hasPrev,
+        jadwalList: p.data,
+      },
+    });
+  }
   res.json(data);
 }));
 
 // --- e-Room: Kalender & Detail Seminar se-Fakultas Teknik ---
 app.get('/api/eroom/jadwal', asyncHandler(async (req, res) => {
-  const { q, nama, jenis, ruang, tanggal, bulan, tahun, refresh } = req.query;
+  const { q, nama, jenis, ruang, tanggal, bulan, tahun, refresh, page, limit } = req.query;
   const data = await svc.jadwalSeminarEroom({
     q,
     nama,
@@ -197,6 +275,18 @@ app.get('/api/eroom/jadwal', asyncHandler(async (req, res) => {
     tahun,
     forceRefresh: refresh === 'true' || refresh === '1',
   });
+  if (page) {
+    const p = paginateArray(data.jadwal || [], page, limit);
+    return res.json({
+      ...data,
+      page: p.page,
+      limit: p.limit,
+      totalPages: p.totalPages,
+      hasNext: p.hasNext,
+      hasPrev: p.hasPrev,
+      jadwal: p.data,
+    });
+  }
   res.json(data);
 }));
 

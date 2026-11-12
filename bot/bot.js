@@ -78,9 +78,8 @@ const NAMA_BULAN = [
   'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember',
 ];
 
-/** Kalau parse_mode Markdown ditolak Telegram (judul mengandung _ * [ dll),
- *  fallback tanpa parse_mode supaya user tetap dapat balasan. */
-async function sendMessage(chatId, text) {
+/** Kirim pesan Telegram (dengan opsi inline keyboard markup). */
+async function sendMessage(chatId, text, replyMarkup = null) {
   const token = config.bot.botToken;
   if (!token) {
     console.error('[bot] sendMessage dibatalkan: TELEGRAM_BOT_TOKEN kosong di environment!');
@@ -89,19 +88,22 @@ async function sendMessage(chatId, text) {
   if (!text) return false;
   const url = 'https://api.telegram.org/bot' + token + '/sendMessage';
 
-  const body = JSON.stringify({
+  const bodyObj = {
     chat_id: chatId,
     text,
     parse_mode: 'Markdown',
     disable_web_page_preview: true,
-  });
-  const bodyPlain = JSON.stringify({
+  };
+  if (replyMarkup) bodyObj.reply_markup = replyMarkup;
+
+  const bodyPlainObj = {
     chat_id: chatId,
     text,
     disable_web_page_preview: true,
-  });
+  };
+  if (replyMarkup) bodyPlainObj.reply_markup = replyMarkup;
 
-  for (const payload of [body, bodyPlain]) {
+  for (const payload of [JSON.stringify(bodyObj), JSON.stringify(bodyPlainObj)]) {
     try {
       const res = await fetch(url, {
         method: 'POST',
@@ -117,6 +119,118 @@ async function sendMessage(chatId, text) {
     }
   }
   return false;
+}
+
+/** Edit teks pesan yang sudah ada secara in-place (berguna untuk pagination). */
+async function editMessageText(chatId, messageId, text, replyMarkup = null) {
+  const token = config.bot.botToken;
+  if (!token || !chatId || !messageId) return false;
+  const url = 'https://api.telegram.org/bot' + token + '/editMessageText';
+
+  const bodyObj = {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+    parse_mode: 'Markdown',
+    disable_web_page_preview: true,
+  };
+  if (replyMarkup) bodyObj.reply_markup = replyMarkup;
+
+  const bodyPlainObj = {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+    disable_web_page_preview: true,
+  };
+  if (replyMarkup) bodyPlainObj.reply_markup = replyMarkup;
+
+  for (const payload of [JSON.stringify(bodyObj), JSON.stringify(bodyPlainObj)]) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+      });
+      if (res.ok) return true;
+    } catch (_) {}
+  }
+  return false;
+}
+
+/** Jawab callback query dari tombol inline agar icon loading berhenti. */
+async function answerCallbackQuery(callbackQueryId, text = '') {
+  const token = config.bot.botToken;
+  if (!token || !callbackQueryId) return;
+  try {
+    await fetch('https://api.telegram.org/bot' + token + '/answerCallbackQuery', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ callback_query_id: callbackQueryId, text }),
+    });
+  } catch (_) {}
+}
+
+/** Potong array sesuai halaman dan ukuran halaman. */
+function paginateArray(items, page = 1, pageSize = 6) {
+  const total = (items || []).length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const currentPage = Math.max(1, Math.min(Number(page) || 1, totalPages));
+  const startIndex = (currentPage - 1) * pageSize;
+  const endIndex = Math.min(startIndex + pageSize, total);
+  const pageItems = (items || []).slice(startIndex, endIndex);
+
+  return {
+    total,
+    totalPages,
+    currentPage,
+    pageSize,
+    startIndex,
+    endIndex,
+    items: pageItems,
+  };
+}
+
+/** Buat keyboard pagination inline (Telegram) yang ramah batas 64 byte callback_data. */
+function buildPaginationKeyboard(type, query, currentPage, totalPages) {
+  if (totalPages <= 1) return null;
+
+  const buttons = [];
+  const qClean = encodeURIComponent(String(query || '').slice(0, 25));
+
+  if (currentPage > 1) {
+    buttons.push({
+      text: '⬅️ Sebelumnya',
+      callback_data: `pg:${type}:${qClean}:${currentPage - 1}`,
+    });
+  }
+
+  buttons.push({
+    text: `📄 ${currentPage}/${totalPages}`,
+    callback_data: 'noop',
+  });
+
+  if (currentPage < totalPages) {
+    buttons.push({
+      text: 'Selanjutnya ➡️',
+      callback_data: `pg:${type}:${qClean}:${currentPage + 1}`,
+    });
+  }
+
+  return {
+    inline_keyboard: [buttons],
+  };
+}
+
+/** Pisahkan argumen teks dengan nomor halaman opsional di bagian akhir (contoh: "D209 2" -> q: "D209", page: 2). */
+function parseArgAndPage(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return { q: '', page: 1 };
+  // Hanya ambil jika kata terakhir berupa 1-3 digit angka
+  const match = s.match(/^(.*?)(?:\s+(\d{1,3}))$/);
+  if (match && match[1].trim()) {
+    return { q: match[1].trim(), page: parseInt(match[2], 10) || 1 };
+  }
+  return { q: s, page: 1 };
 }
 
 /** Indikator "typing..." supaya user tahu bot sedang memproses. */
@@ -339,12 +453,295 @@ function formatProfilMahasiswa(mhs) {
   return text;
 }
 
+/** Render halaman jadwal seminar e-room (dengan pagination). */
+async function renderEroomPage(chatId, messageId, q, page = 1) {
+  const svc = getSvc();
+  await svc.connect();
+  const res = await svc.jadwalSeminarEroom({ q });
+  const all = res.jadwal || [];
+  if (!all.length) {
+    const emptyText = `ℹ️ Tidak ada jadwal seminar e-room ditemukan${q ? ` untuk "*${escapeMd(q)}*"` : ''}.`;
+    if (messageId) await editMessageText(chatId, messageId, emptyText);
+    else await sendMessage(chatId, emptyText);
+    return;
+  }
+
+  const p = paginateArray(all, page, 6);
+  let reply = `🏢 *Jadwal Seminar e-Room FT Unmul*${q ? ` — Pencarian "*${escapeMd(q)}*"` : ''}\n`;
+  reply += `Total: *${p.total}* agenda | Halaman *${p.currentPage}* dari *${p.totalPages}*\n\n`;
+
+  p.items.forEach((j, i) => {
+    const num = p.startIndex + i + 1;
+    const tgl = j.tanggal ? formatTanggalIndo(j.tanggal) : 'Belum terjadwal';
+    const jam = j.jam ? ` (${j.jam}${j.jamSelesai ? '-' + j.jamSelesai : ''} WITA)` : '';
+    reply += `${num}. *${escapeMd(j.nama)}*\n`;
+    reply += `   📍 *Ruang*: \`${escapeMd(j.ruang)}\` | *Tahap*: ${escapeMd(j.jenis)}\n`;
+    reply += `   🗓️ ${tgl}${jam}\n`;
+  });
+
+  if (p.totalPages > 1) {
+    reply += `\n💡 _Gunakan tombol di bawah atau ketik:_ \`/eroom ${q ? q + ' ' : ''}${p.currentPage < p.totalPages ? p.currentPage + 1 : 1}\`\n`;
+  }
+  reply += '👉 _Ketik \`/detail <nama/NIM>\` untuk melihat dosen & audiens hadir._';
+
+  const kb = buildPaginationKeyboard('erm', q, p.currentPage, p.totalPages);
+  if (messageId) {
+    await editMessageText(chatId, messageId, reply, kb);
+  } else {
+    await sendMessage(chatId, reply, kb);
+  }
+}
+
+/** Render halaman daftar judul skripsi (dengan pagination). */
+async function renderJudulPage(chatId, messageId, query, page = 1) {
+  const svc = getSvc();
+  await svc.connect();
+  const res = await svc.judulSkripsi({ q: query });
+  const daftar = res.daftar || [];
+
+  if (!daftar.length) {
+    const emptyText = `Tidak ditemukan judul skripsi untuk kata kunci: *${escapeMd(query)}*.`;
+    if (messageId) await editMessageText(chatId, messageId, emptyText);
+    else await sendMessage(chatId, emptyText);
+    return;
+  }
+
+  const p = paginateArray(daftar, page, 5);
+  let reply = `📚 *Daftar Judul Skripsi* (filter: _${escapeMd(query)}_)\n`;
+  reply += `Total: *${p.total}* judul | Halaman *${p.currentPage}* dari *${p.totalPages}*\n\n`;
+
+  p.items.forEach((item, idx) => {
+    const num = p.startIndex + idx + 1;
+    reply += `${num}. *${escapeMd(item.judul)}*\n`;
+    reply += `   👤 *${escapeMd(item.nama)}* (\`${item.nim || '-'}\`)\n`;
+
+    const dosen = item.dosen || {};
+    const p1 = dosen.pembimbing_1?.nama ? `P1: ${dosen.pembimbing_1.nama}` : '';
+    const p2 = dosen.pembimbing_2?.nama ? `P2: ${dosen.pembimbing_2.nama}` : '';
+    const pemb = [p1, p2].filter(Boolean).join(' | ');
+    if (pemb) reply += `   👥 ${escapeMd(pemb)}\n`;
+    if (item.batasWaktu) reply += `   ⏳ Status: _${escapeMd(item.batasWaktu)}_\n`;
+    reply += '\n';
+  });
+
+  if (p.totalPages > 1) {
+    reply += `💡 _Gunakan tombol di bawah atau ketik:_ \`/judul ${query} ${p.currentPage < p.totalPages ? p.currentPage + 1 : 1}\`\n`;
+  }
+  reply += '👉 _Ketik \`/mhs <NIM>\` untuk melihat detail riwayat sidang._';
+
+  const kb = buildPaginationKeyboard('jdl', query, p.currentPage, p.totalPages);
+  if (messageId) {
+    await editMessageText(chatId, messageId, reply, kb);
+  } else {
+    await sendMessage(chatId, reply, kb);
+  }
+}
+
+/** Render halaman daftar mahasiswa hasil pencarian nama (dengan pagination). */
+async function renderMahasiswaListPage(chatId, messageId, query, page = 1) {
+  const svc = getSvc();
+  await svc.connect();
+  const result = await svc.cariMahasiswa(query);
+  const matches = result.matches || [];
+
+  if (!matches.length) {
+    const emptyText = `❌ Mahasiswa dengan kata kunci "*${escapeMd(query)}*" tidak ditemukan di sistem.\n\nTips: Pastikan ejaan nama benar atau gunakan NIM lengkap.`;
+    if (messageId) await editMessageText(chatId, messageId, emptyText);
+    else await sendMessage(chatId, emptyText);
+    return;
+  }
+
+  // Jika hanya 1 hasil dan bukan navigasi callback: tampilkan profil detail langsung
+  if (matches.length === 1 && !messageId) {
+    const textReply = formatProfilMahasiswa(matches[0]);
+    await sendMessage(chatId, textReply);
+    return;
+  }
+
+  const p = paginateArray(matches, page, 5);
+  let reply = `🔍 *Pencarian Mahasiswa* (kata kunci: "*${escapeMd(query)}*")\n`;
+  reply += `Total: *${p.total}* orang | Halaman *${p.currentPage}* dari *${p.totalPages}*\n\n`;
+
+  p.items.forEach((m, idx) => {
+    const num = p.startIndex + idx + 1;
+    const tahap = (m.riwayatSidang || []).map((s) => s.jenis.replace('Seminar ', '')).join(', ') || 'Belum ada jadwal';
+    reply += `${num}. *${escapeMd(m.nama)}* (\`${m.nim || '-'}\`)\n`;
+    if (m.prodi) reply += `   🏛️ Prodi: ${escapeMd(m.prodi)}\n`;
+    if (m.judul) {
+      const cutJudul = m.judul.length > 70 ? m.judul.slice(0, 70) + '...' : m.judul;
+      reply += `   📖 _${escapeMd(cutJudul)}_\n`;
+    }
+    reply += `   📅 Sidang: ${escapeMd(tahap)}\n\n`;
+  });
+
+  if (p.totalPages > 1) {
+    reply += `💡 _Gunakan tombol di bawah atau ketik:_ \`/mhs ${query} ${p.currentPage < p.totalPages ? p.currentPage + 1 : 1}\`\n`;
+  }
+  reply += '👉 *Ketik:* `/mhs <NIM>` untuk melihat detail salah satu mahasiswa di atas.';
+
+  const kb = buildPaginationKeyboard('mhs', query, p.currentPage, p.totalPages);
+  if (messageId) {
+    await editMessageText(chatId, messageId, reply, kb);
+  } else {
+    await sendMessage(chatId, reply, kb);
+  }
+}
+
+/** Render halaman jadwal harian / semua (dengan pagination). */
+async function renderJadwalPage(chatId, messageId, targetArg, page = 1) {
+  const svc = getSvc();
+  await svc.connect();
+  const data = await svc.jadwalSeminarEroom().catch(() => svc.jadwalSkripsi({ enrich: false, useCache: true }));
+  const allJadwal = data.jadwal || [];
+
+  const today = new Date();
+  const isAll = /^semua|all$/i.test(targetArg);
+
+  let filtered = [];
+  let titleHeader = '';
+
+  if (isAll) {
+    filtered = allJadwal;
+    titleHeader = '📊 *Semua Agenda Seminar e-Room FT Unmul*';
+  } else {
+    let tgl = targetArg ? parseTarget(targetArg) : today.toISOString().slice(0, 10);
+    if (!tgl) tgl = today.toISOString().slice(0, 10);
+    filtered = allJadwal.filter((e) => e.tanggal === tgl);
+    const dObj = new Date(tgl + 'T00:00:00');
+    const namaH = NAMA_HARI[dObj.getDay()] || '';
+    titleHeader = `📅 *Jadwal Sidang ${namaH}, ${formatTanggalIndo(tgl)}*`;
+  }
+
+  if (!filtered.length) {
+    const emptyText = `${titleHeader}\n\nTidak ada jadwal sidang pada tanggal ini.`;
+    if (messageId) await editMessageText(chatId, messageId, emptyText);
+    else await sendMessage(chatId, emptyText);
+    return;
+  }
+
+  const p = paginateArray(filtered, page, 6);
+  let reply = `${titleHeader}\n`;
+  reply += `Total: *${p.total}* agenda | Halaman *${p.currentPage}* dari *${p.totalPages}*\n\n`;
+
+  p.items.forEach((e, i) => {
+    const num = p.startIndex + i + 1;
+    const jam = typeof e.jam === 'string' ? e.jam.slice(0, 5) : (e.jam || '-');
+    const ruang = e.ruang ? ` [Ruang ${e.ruang}]` : '';
+    reply += `${num}. \`${jam}\` — *${escapeMd(e.title)}* (_${escapeMd(e.jenis)}_${escapeMd(ruang)})\n`;
+  });
+
+  if (p.totalPages > 1) {
+    reply += `\n💡 _Gunakan tombol di bawah atau ketik:_ \`/jadwal ${targetArg || 'hari ini'} ${p.currentPage < p.totalPages ? p.currentPage + 1 : 1}\``;
+  }
+
+  const kb = buildPaginationKeyboard('jdwl', targetArg || 'today', p.currentPage, p.totalPages);
+  if (messageId) {
+    await editMessageText(chatId, messageId, reply, kb);
+  } else {
+    await sendMessage(chatId, reply, kb);
+  }
+}
+
+/** Render halaman rincian sidang bulanan statistik (dengan pagination). */
+async function renderStatistikPage(chatId, messageId, periodeVal, page = 1) {
+  const svc = getSvc();
+  await svc.connect();
+  const statData = await svc.statistikSidang({ bulan: periodeVal });
+  const b = statData.targetBulan || { sempro: 0, semhas: 0, pendadaran: 0, total: 0, jadwalList: [] };
+
+  const parts = (periodeVal || '').split('-');
+  const namaB = NAMA_BULAN[parseInt(parts[1], 10)] || periodeVal;
+  const label = `${namaB} ${parts[0] || ''}`.trim();
+
+  let reply = `📊 *Statistik Sidang e-Room FT — ${label}*\n\n`;
+  reply += `• 📝 *Seminar Proposal*: *${b.sempro}* orang\n`;
+  reply += `• 📋 *Seminar Hasil*: *${b.semhas}* orang\n`;
+  reply += `• 🎓 *Pendadaran*: *${b.pendadaran}* orang\n`;
+  reply += '━━━━━━━━━━━━━━━━━━━━\n';
+  reply += `• 📌 *Total Sidang*: *${b.total}* orang\n\n`;
+
+  const list = b.jadwalList || [];
+  if (!list.length) {
+    reply += 'ℹ️ _Belum ada jadwal sidang terdaftar di bulan ini._\n';
+  } else {
+    const p = paginateArray(list, page, 6);
+    reply += `🗓️ *Daftar Sidang (${p.total} orang) — Hal ${p.currentPage}/${p.totalPages}*:\n`;
+    p.items.forEach((j, i) => {
+      const num = p.startIndex + i + 1;
+      const shortName = (j.title || '').split(' - ')[0].trim();
+      const tgl = (j.tanggal || '').slice(8, 10) + '/' + (j.tanggal || '').slice(5, 7);
+      reply += `${num}. ${tgl} — *${escapeMd(shortName)}* (_${escapeMd(j.jenis)}_)\n`;
+    });
+
+    const kb = buildPaginationKeyboard('stat', periodeVal, p.currentPage, p.totalPages);
+    if (messageId) {
+      await editMessageText(chatId, messageId, reply, kb);
+    } else {
+      await sendMessage(chatId, reply, kb);
+    }
+    return;
+  }
+
+  if (messageId) await editMessageText(chatId, messageId, reply);
+  else await sendMessage(chatId, reply);
+}
+
+/** Handler callback query untuk tombol inline pagination Telegram. */
+async function handleCallbackQuery(cq) {
+  const data = cq.data || '';
+  if (!data || data === 'noop') {
+    await answerCallbackQuery(cq.id);
+    return;
+  }
+
+  const parts = data.split(':');
+  if (parts[0] !== 'pg' || parts.length < 4) {
+    await answerCallbackQuery(cq.id);
+    return;
+  }
+
+  const type = parts[1];
+  const query = decodeURIComponent(parts[2] || '');
+  const page = parseInt(parts[3], 10) || 1;
+  const chatId = cq.message?.chat?.id;
+  const messageId = cq.message?.message_id;
+
+  if (!chatId || !messageId) {
+    await answerCallbackQuery(cq.id);
+    return;
+  }
+
+  await answerCallbackQuery(cq.id);
+
+  try {
+    if (type === 'erm' || type === 'eroom') {
+      await renderEroomPage(chatId, messageId, query, page);
+    } else if (type === 'jdl' || type === 'judul') {
+      await renderJudulPage(chatId, messageId, query, page);
+    } else if (type === 'mhs' || type === 'mahasiswa') {
+      await renderMahasiswaListPage(chatId, messageId, query, page);
+    } else if (type === 'jdwl' || type === 'jadwal') {
+      await renderJadwalPage(chatId, messageId, query, page);
+    } else if (type === 'stat' || type === 'statistik') {
+      await renderStatistikPage(chatId, messageId, query, page);
+    }
+  } catch (e) {
+    console.error('[bot] Error render callback query:', e.message);
+  }
+}
+
 /** Handler utama untuk satu update Telegram. */
 async function handleUpdate(update) {
+  if (update.update_id !== undefined && isDuplicate(update.update_id)) return;
+
+  // Handle callback query dari inline button (pagination, dll.)
+  if (update.callback_query) {
+    await handleCallbackQuery(update.callback_query);
+    return;
+  }
+
   const msg = update && update.message;
   if (!msg || !msg.text) return;
-
-  if (update.update_id !== undefined && isDuplicate(update.update_id)) return;
 
   const chatId = msg.chat.id;
   const rawText = msg.text.trim();
@@ -386,77 +783,40 @@ async function handleUpdate(update) {
     return;
   }
 
-  // 3. /mhs, /mahasiswa, /cari <nama / NIM>
+  // 3. /mhs, /mahasiswa, /cari <nama / NIM> [halaman]
   const mhsMatch = text.match(/^\/(mhs|mahasiswa|cari)(?:\s+([\s\S]+))?$/i);
   if (mhsMatch) {
-    const query = (mhsMatch[2] || '').trim();
-    if (!query) {
+    const rawArgs = (mhsMatch[2] || '').trim();
+    if (!rawArgs) {
       await sendMessage(
         chatId,
-        'ℹ️ *Pencarian Mahasiswa e-TA*\n\n' +
+        'ℹ️ *Pencarian Mahasiswa e-TA & e-Room*\n\n' +
         'Gunakan format:\n' +
-        '`/mhs <nama atau NIM>`\n\n' +
+        '`/mhs <nama atau NIM> [halaman]`\n\n' +
         'Contoh:\n' +
         '`/mhs Renaldi`\n' +
-        '`/mhs 2209106054`'
+        '`/mhs 2209106054`\n' +
+        '`/mhs Muhammad 2`'
       );
       return;
     }
 
+    const { q: query, page } = parseArgAndPage(rawArgs);
     await sendTyping(chatId);
     try {
-      const svc = getSvc();
-      await svc.connect();
-      const result = await svc.cariMahasiswa(query);
-
-      if (!result.matches || result.matches.length === 0) {
-        await sendMessage(
-          chatId,
-          `❌ Mahasiswa dengan kata kunci "*${escapeMd(query)}*" tidak ditemukan di sistem e-TA.\n\n` +
-          'Tips: Pastikan ejaan nama benar atau gunakan NIM lengkap.'
-        );
-        return;
-      }
-
-      // Jika hanya ada 1 hasil: tampilkan profil detail langsung!
-      if (result.matches.length === 1) {
-        const textReply = formatProfilMahasiswa(result.matches[0]);
-        await sendMessage(chatId, textReply);
-        return;
-      }
-
-      // Jika ada beberapa hasil (2 - 10): tampilkan daftar kandidat
-      const maks = 10;
-      const list = result.matches.slice(0, maks);
-      let listText = `🔍 Ditemukan *${result.total}* mahasiswa untuk kata kunci "*${escapeMd(query)}*":\n\n`;
-
-      list.forEach((m, idx) => {
-        const tahap = (m.riwayatSidang || []).map((s) => s.jenis.replace('Seminar ', '')).join(', ') || 'Belum ada jadwal';
-        listText += `${idx + 1}. *${escapeMd(m.nama)}* (\`${m.nim || '-'}\`)\n`;
-        if (m.judul) {
-          const cutJudul = m.judul.length > 70 ? m.judul.slice(0, 70) + '...' : m.judul;
-          listText += `   📖 _${escapeMd(cutJudul)}_\n`;
-        }
-        listText += `   📅 Sidang: ${escapeMd(tahap)}\n\n`;
-      });
-
-      if (result.total > maks) {
-        listText += `_...dan ${result.total - maks} mahasiswa lainnya. Masukkan NIM untuk hasil spesifik._\n\n`;
-      }
-
-      listText += '👉 *Ketik:* `/mhs <NIM>` untuk melihat detail lengkap salah satu mahasiswa di atas.';
-      await sendMessage(chatId, listText);
+      await renderMahasiswaListPage(chatId, null, query, page);
     } catch (e) {
       await sendMessage(chatId, '⚠️ Gagal mencari data mahasiswa: ' + (e.message || 'kesalahan tidak dikenal'));
     }
     return;
   }
 
-  // 4. /statistik, /stats [bulan/tahun]
+  // 4. /statistik, /stats [bulan/tahun] [halaman]
   const statMatch = text.match(/^\/(statistik|stats)(?:\s+([\s\S]+))?$/i);
   if (statMatch) {
     const rawArg = (statMatch[2] || '').trim();
-    const target = parseBulanTahun(rawArg);
+    const { q: periodArg, page: statPage } = parseArgAndPage(rawArg);
+    const target = parseBulanTahun(periodArg || rawArg);
 
     if (!target) {
       await sendMessage(
@@ -478,34 +838,7 @@ async function handleUpdate(update) {
       await svc.connect();
 
       if (target.type === 'bulan') {
-        const statData = await svc.statistikSidang({ bulan: target.val });
-        const b = statData.targetBulan || { sempro: 0, semhas: 0, pendadaran: 0, total: 0, jadwalList: [] };
-
-        let reply = `📊 *Statistik Sidang e-TA — ${target.label}*\n\n`;
-        reply += `• 📝 *Seminar Proposal*: *${b.sempro}* orang\n`;
-        reply += `• 📋 *Seminar Hasil*: *${b.semhas}* orang\n`;
-        reply += `• 🎓 *Pendadaran*: *${b.pendadaran}* orang\n`;
-        reply += '━━━━━━━━━━━━━━━━━━━━\n';
-        reply += `• 📌 *Total Sidang*: *${b.total}* orang\n\n`;
-
-        if (b.jadwalList && b.jadwalList.length > 0) {
-          const sample = b.jadwalList.slice(0, 6);
-          reply += `🗓️ *Daftar Sidang Bulan Ini (${b.total} terdaftar)*:\n`;
-          sample.forEach((j, i) => {
-            const shortName = (j.title || '').split(' - ')[0].trim();
-            const tgl = (j.tanggal || '').slice(8, 10) + '/' + (j.tanggal || '').slice(5, 7);
-            reply += `${i + 1}. ${tgl} — *${escapeMd(shortName)}* (_${escapeMd(j.jenis)}_)\n`;
-          });
-          if (b.jadwalList.length > 6) {
-            reply += `_...dan ${b.jadwalList.length - 6} sidang lainnya._\n`;
-          }
-          reply += '\n';
-        } else {
-          reply += 'ℹ️ _Belum ada jadwal sidang terdaftar di bulan ini._\n\n';
-        }
-
-        reply += '💡 _Gunakan `/statistik <bulan>` (contoh: `/statistik oktober` atau `/statistik 2026`) untuk periode lain._';
-        await sendMessage(chatId, reply);
+        await renderStatistikPage(chatId, null, target.val, statPage);
         return;
       }
 
@@ -648,144 +981,52 @@ async function handleUpdate(update) {
     return;
   }
 
-  // 6. /judul <kata kunci>
+  // 6. /judul <kata kunci> [halaman]
   const judulMatch = text.match(/^\/judul(?:\s+([\s\S]+))?$/i);
   if (judulMatch) {
-    const query = (judulMatch[1] || '').trim();
-    if (!query) {
+    const raw = (judulMatch[1] || '').trim();
+    if (!raw) {
       await sendMessage(
         chatId,
         'ℹ️ *Pencarian Judul Skripsi*\n\n' +
-        'Gunakan format: `/judul <kata kunci>`\n' +
-        'Contoh: `/judul artificial intelligence` atau `/judul augmented reality`'
+        'Gunakan format: `/judul <kata kunci> [halaman]`\n' +
+        'Contoh: `/judul kecerdasan buatan` atau `/judul sistem 2`'
       );
       return;
     }
 
+    const { q: query, page } = parseArgAndPage(raw);
     await sendTyping(chatId);
     try {
-      const svc = getSvc();
-      await svc.connect();
-      const res = await svc.judulSkripsi({ q: query });
-      const daftar = res.daftar || [];
-
-      if (!daftar.length) {
-        await sendMessage(chatId, `Tidak ditemukan judul skripsi untuk kata kunci: *${escapeMd(query)}*.`);
-        return;
-      }
-
-      const maks = 5;
-      let reply = `📚 *Daftar Judul Skripsi* (filter: _${escapeMd(query)}_)\n`;
-      reply += `Total ditemukan: *${daftar.length}* judul\n\n`;
-
-      const items = daftar.slice(0, maks).map((item, idx) => {
-        let block = `${idx + 1}. *${escapeMd(item.judul)}*\n`;
-        block += `   👤 *${escapeMd(item.nama)}* (\`${item.nim || '-'}\`)\n`;
-
-        const dosen = item.dosen || {};
-        const p1 = dosen.pembimbing_1?.nama ? `P1: ${dosen.pembimbing_1.nama}` : '';
-        const p2 = dosen.pembimbing_2?.nama ? `P2: ${dosen.pembimbing_2.nama}` : '';
-        const pemb = [p1, p2].filter(Boolean).join(' | ');
-        if (pemb) block += `   👥 ${escapeMd(pemb)}\n`;
-
-        if (item.batasWaktu) block += `   ⏳ Status: _${escapeMd(item.batasWaktu)}_\n`;
-        return block;
-      });
-
-      reply += items.join('\n');
-      if (daftar.length > maks) {
-        reply += `\n_...dan ${daftar.length - maks} judul lainnya._\n`;
-      }
-      reply += '\n💡 _Ketik `/mhs <NIM>` untuk melihat detail riwayat sempro, semhas, & pendadaran._';
-
-      await sendMessage(chatId, reply);
+      await renderJudulPage(chatId, null, query, page);
     } catch (e) {
       await sendMessage(chatId, '⚠️ Gagal mencari judul: ' + (e.message || 'kesalahan tidak dikenal'));
     }
     return;
   }
 
-  // 7. /jadwal dengan argumen.
+  // 7. /jadwal [hari / tanggal / semua] [halaman]
   const jadwalMatch = text.match(/^\/(jadwal|jadwal_skripsi|skripsi)(?:\s+([\s\S]+))?$/i);
   if (jadwalMatch) {
     await sendTyping(chatId);
-    const args = (jadwalMatch[2] || '').trim();
-
+    const raw = (jadwalMatch[2] || '').trim();
+    const { q: targetArg, page } = parseArgAndPage(raw);
     try {
-      const svc = getSvc();
-      await svc.connect();
-      const data = await svc.jadwalSeminarEroom().catch(() => svc.jadwalSkripsi({ enrich: false, useCache: true }));
-
-      const today = new Date();
-      const namaHari = NAMA_HARI[today.getDay()];
-
-      // "/jadwal" tanpa argumen -> hari ini.
-      if (!args) {
-        const tgl = today.toISOString().slice(0, 10);
-        const replyText = formatJadwalTanggal(data.jadwal, tgl, namaHari);
-        await sendMessage(chatId, replyText);
-        return;
-      }
-
-      // "/jadwal semua" -> ringkasan total.
-      if (/^semua|all$/i.test(args)) {
-        const total = data.jadwal.length;
-        await sendMessage(
-          chatId,
-          '📊 Total *' + total + '* jadwal sidang.\n\n' +
-          'Pakai `/jadwal <hari|tanggal>` untuk melihat per hari.\n' +
-          'Contoh: `/jadwal besok`, `/jadwal kamis`, `/jadwal 2026-11-23`'
-        );
-        return;
-      }
-
-      // "/jadwal <target>" -> tanggal spesifik.
-      const target = parseTarget(args);
-      if (!target) {
-        await sendMessage(
-          chatId,
-          'Format tidak dikenali. Contoh:\n`/jadwal`\n`/jadwal besok`\n`/jadwal kamis`\n`/jadwal 2026-11-23`'
-        );
-        return;
-      }
-      const tglDate = new Date(target + 'T00:00:00');
-      const namaTarget = NAMA_HARI[tglDate.getDay()];
-      const replyText = formatJadwalTanggal(data.jadwal, target, namaTarget);
-      await sendMessage(chatId, replyText);
+      await renderJadwalPage(chatId, null, targetArg, page);
     } catch (e) {
       await sendMessage(chatId, '⚠️ Gagal mengambil jadwal: ' + (e.message || 'kesalahan tidak dikenal'));
     }
     return;
   }
 
-  // 7. /eroom [kata kunci / ruang / nama]
+  // 8. /eroom [kata kunci / ruang / nama] [halaman]
   const eroomMatch = text.match(/^\/eroom(?:\s+([\s\S]+))?$/i);
   if (eroomMatch) {
-    const q = (eroomMatch[1] || '').trim();
+    const raw = (eroomMatch[1] || '').trim();
+    const { q: query, page } = parseArgAndPage(raw);
     await sendTyping(chatId);
     try {
-      const svc = getSvc();
-      await svc.connect();
-      const res = await svc.jadwalSeminarEroom({ q });
-      if (!res.jadwal || res.jadwal.length === 0) {
-        await sendMessage(chatId, `ℹ️ Tidak ada jadwal seminar e-room ditemukan${q ? ` untuk "*${escapeMd(q)}*"` : ''}.`);
-        return;
-      }
-      let reply = `🏢 *Jadwal Seminar e-Room FT Unmul*${q ? ` — Pencarian "*${escapeMd(q)}*"` : ''}\n\n`;
-      reply += `Total ditemukan: *${res.total}* agenda\n\n`;
-      const sample = res.jadwal.slice(0, 8);
-      sample.forEach((j, i) => {
-        const tgl = j.tanggal ? formatTanggalIndo(j.tanggal) : 'Belum terjadwal';
-        const jam = j.jam ? ` (${j.jam}${j.jamSelesai ? '-' + j.jamSelesai : ''} WITA)` : '';
-        reply += `${i + 1}. *${escapeMd(j.nama)}*\n`;
-        reply += `   📍 *Ruang*: \`${escapeMd(j.ruang)}\` | *Tahap*: ${escapeMd(j.jenis)}\n`;
-        reply += `   🗓️ ${tgl}${jam}\n`;
-      });
-      if (res.jadwal.length > 8) {
-        reply += `\n_...dan ${res.jadwal.length - 8} agenda lainnya._\n`;
-      }
-      reply += '\n💡 _Ketik `/detail <nama/NIM>` untuk melihat dosen penilai & audiens hadir._';
-      await sendMessage(chatId, reply);
+      await renderEroomPage(chatId, null, query, page);
     } catch (e) {
       await sendMessage(chatId, '⚠️ Gagal mengambil jadwal e-room: ' + (e.message || 'kesalahan tidak dikenal'));
     }
