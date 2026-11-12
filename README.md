@@ -101,12 +101,16 @@ Semua endpoint adalah `GET` dan mengembalikan JSON. Otentikasi dikelola otomatis
 | `/api/dashboard` | Jadwal sidang dari beranda |
 | `/api/jadwal/sidang` | Kalender jadwal sidang (jenis & token) + pencarian |
 | `/api/judul-skripsi` | Daftar judul skripsi + dosen penilai + pencarian |
+| `/api/mahasiswa` | Cari mahasiswa lengkap: judul TA, tim dosen, & timeline sidang sempro/semhas/pdd (e-TA & e-room) |
+| `/api/statistik` | Data statistik sidang per bulan/tahun/semua (`?source=eroom|eta`) |
+| `/api/eroom/jadwal` | Kalender seminar dari modul e-room (3.000+ data se-Fakultas Teknik) |
+| `/api/eroom/sidang/:token` | Detail sidang modul e-room lengkap dengan tim penilai & audiens hadir |
+| `/api/sidang/:token` | Detail sidang per token (judul, jadwal, penilai, audiens) |
 | `/api/data/proposal` | Tabel data proposal (KRS/identitas) |
 | `/api/data/hasil` | Data hasil seminar (per akun) |
 | `/api/data/pendadaran` | Data pendadaran (per akun) |
 | `/api/bimbingan` | Progress bimbingan (per akun) |
 | `/api/seminar` | Riwayat seminar (per akun) |
-| `/api/sidang/:token` | Detail sidang per token (judul, jadwal, penilai) |
 | `/api/profil` | Profil mahasiswa lengkap (nilai, dst.) |
 | `/api/ruang` | Daftar ruang seminar per prodi |
 
@@ -317,10 +321,11 @@ wa-bot/
 
 | Perintah | Hasil |
 |----------|-------|
-| `/mhs <nama/NIM>` | Info mahasiswa: judul TA, dosen pembimbing & penguji, serta riwayat sempro/semhas/pdd |
+| `/mhs <nama/NIM>` | Info mahasiswa: judul TA, dosen pembimbing & penguji, serta riwayat sempro/semhas/pdd (e-TA + e-room) |
 | `/judul <kata kunci>` | Cari judul skripsi, mahasiswa, & dosen penilai |
-| `/detail <NIM/token>` | Rincian ruang, kapasitas, peserta, & SK penilai sidang |
-| `/statistik [periode]` | Statistik berapa orang sempro, semhas, & pendadaran |
+| `/detail <NIM/token>` | Rincian ruang, kapasitas, SK penilai sidang, & daftar peserta/audiens hadir |
+| `/eroom <ruang/nama>` | Cari jadwal seminar e-room se-Fakultas Teknik (3.000+ agenda) |
+| `/statistik [periode]` | Statistik berapa orang sempro, semhas, & pendadaran (se-FT) |
 | `/jadwal` | Jadwal sidang hari ini |
 | `/jadwal besok` / `lusa` / `kemarin` | Jadwal tanggal relatif |
 | `/jadwal kamis` (dst.) | Jadwal hari tersebut di pekan mendatang |

@@ -14,6 +14,7 @@ const {
   parseJudulSkripsi,
   parseProfilMahasiswa,
   parseRuangSeminar,
+  parseJadwalSeminarEroom,
 } = require('./parsers');
 const config = require('../config');
 
@@ -23,6 +24,12 @@ class EtaService {
     this.client = null;
     this.connected = false;
     this.lastLoginAt = null;
+
+    // Cache jadwal e-room (karena berukuran ~2MB dengan 3000+ event)
+    this._eroomJadwalCache = null;
+    this._eroomCacheTime = 0;
+    this._eroomCacheTTL = 5 * 60 * 1000; // 5 menit
+    this._eroomIdentity = null;
   }
 
   /** Login ke sistem dan siapkan session. */
@@ -151,10 +158,96 @@ class EtaService {
     return data;
   }
 
-  /** GET data detail sidang per token. */
-  async detailSidang(token) {
-    const html = await this._get(`/mahasiswa/e-ta/informasi_skripsi/${encodeURIComponent(token)}`);
-    return parseInformasiSkripsi(html);
+  /**
+   * GET data detail sidang per token.
+   * Mendukung token dari e-TA (/mahasiswa/e-ta/informasi_skripsi/:token)
+   * maupun e-room (/mahasiswa/e-room/informasi_seminar/:token).
+   */
+  async detailSidang(token, { source = 'auto' } = {}) {
+    if (!token) throw new Error('Token sidang diperlukan');
+    const cleanToken = encodeURIComponent(String(token).trim());
+
+    if (source === 'eroom') {
+      const html = await this._get(`/mahasiswa/e-room/informasi_seminar/${cleanToken}`);
+      return parseInformasiSkripsi(html);
+    }
+    if (source === 'eta') {
+      const html = await this._get(`/mahasiswa/e-ta/informasi_skripsi/${cleanToken}`);
+      return parseInformasiSkripsi(html);
+    }
+
+    // Default 'auto': coba e-room dulu, jika gagal coba e-ta
+    try {
+      const html = await this._get(`/mahasiswa/e-room/informasi_seminar/${cleanToken}`);
+      const parsed = parseInformasiSkripsi(html);
+      if (parsed.judul || (parsed.peserta && parsed.peserta.nama)) {
+        return parsed;
+      }
+    } catch (_) {}
+
+    const etaHtml = await this._get(`/mahasiswa/e-ta/informasi_skripsi/${cleanToken}`);
+    return parseInformasiSkripsi(etaHtml);
+  }
+
+  /**
+   * GET jadwal seminar dari modul e-room (/mahasiswa/e-room/lihat_jadwal_seminar).
+   * Berisi kalender komprehensif seminar se-Fakultas Teknik (3.000+ agenda).
+   * Dilengkapi in-memory TTL caching (5 menit) agar response secepat kilat.
+   * @param {object} opts - { q, nama, jenis, ruang, tanggal, bulan, tahun, forceRefresh }
+   */
+  async jadwalSeminarEroom({
+    q = '',
+    nama = '',
+    jenis = '',
+    ruang = '',
+    tanggal = '',
+    bulan = '',
+    tahun = '',
+    forceRefresh = false,
+  } = {}) {
+    await this._ensure();
+    const now = Date.now();
+    const isCacheValid = this._eroomJadwalCache && (now - this._eroomCacheTime < this._eroomCacheTTL);
+
+    if (forceRefresh || !isCacheValid) {
+      const html = await this._get('/mahasiswa/e-room/lihat_jadwal_seminar');
+      const parsed = parseJadwalSeminarEroom(html);
+      this._eroomJadwalCache = parsed.jadwal || [];
+      this._eroomCacheTime = now;
+      this._eroomIdentity = parsed.identity || {};
+    }
+
+    let list = this._eroomJadwalCache || [];
+
+    if (q || nama || jenis || ruang || tanggal || bulan || tahun) {
+      const ql = q.toLowerCase();
+      const namal = nama.toLowerCase();
+      const jenisl = jenis.toLowerCase();
+      const ruangl = ruang.toLowerCase();
+
+      list = list.filter((item) => {
+        const iTitle = (item.title || '').toLowerCase();
+        const iNama = (item.nama || '').toLowerCase();
+        const iJenis = (item.jenis || '').toLowerCase();
+        const iRuang = (item.ruang || '').toLowerCase();
+        const iTgl = item.tanggal || '';
+
+        if (q && !iTitle.includes(ql) && !iNama.includes(ql)) return false;
+        if (nama && !iNama.includes(namal)) return false;
+        if (jenis && !iJenis.includes(jenisl)) return false;
+        if (ruang && !iRuang.includes(ruangl)) return false;
+        if (tanggal && iTgl !== tanggal) return false;
+        if (bulan && !iTgl.startsWith(bulan)) return false;
+        if (tahun && !iTgl.startsWith(tahun)) return false;
+        return true;
+      });
+    }
+
+    return {
+      identity: this._eroomIdentity || {},
+      total: list.length,
+      jadwal: list,
+    };
   }
 
   /** GET profil mahasiswa lengkap (nilai, publikasi, dll). */
@@ -214,6 +307,7 @@ class EtaService {
   /**
    * Cari informasi mahasiswa lengkap: judul TA, dosen pembimbing & penguji,
    * serta riwayat semua sidang (Sempro, Semhas, Pendadaran).
+   * Menggabungkan sumber data dari e-TA dan e-room (kalender komprehensif se-FT).
    * @param {string} query - Nama atau NIM mahasiswa.
    */
   async cariMahasiswa(query = '') {
@@ -223,13 +317,30 @@ class EtaService {
     await this._ensure();
     const qLower = q.toLowerCase();
 
-    // 1. Ambil data judul skripsi & jadwal dashboard secara paralel
-    const [judulData, dashData] = await Promise.all([
-      this.judulSkripsi({ q }),
-      this.dashboard(),
+    // 1. Ambil data judul skripsi, jadwal dashboard, dan jadwal e-room secara paralel
+    const [judulData, dashData, eroomData] = await Promise.all([
+      this.judulSkripsi({ q }).catch(() => ({ daftar: [] })),
+      this.dashboard().catch(() => ({ jadwal: [] })),
+      this.jadwalSeminarEroom({ q }).catch(() => ({ jadwal: [] })),
     ]);
 
-    const allJadwal = dashData.jadwal || [];
+    // Satukan jadwal dashboard dan e-room, prioritaskan e-room bila ada
+    const rawAllJadwal = [
+      ...(dashData.jadwal || []),
+      ...(eroomData.jadwal || []),
+    ];
+
+    const seenEventKeys = new Set();
+    const allJadwal = [];
+    for (const j of rawAllJadwal) {
+      const nameKey = (j.nama || (j.title || '').split(' - ')[0]).trim().toLowerCase();
+      const eventKey = `${nameKey}_${j.jenis || ''}_${j.tanggal || ''}`;
+      if (!seenEventKeys.has(eventKey)) {
+        seenEventKeys.add(eventKey);
+        allJadwal.push(j);
+      }
+    }
+
     const candidateMap = new Map();
 
     const findSchedulesForName = (nama) => {
@@ -259,7 +370,7 @@ class EtaService {
 
     const formatScheduleItem = (j) => {
       const parts = (j.title || '').split(' - ');
-      const ruang = parts.length > 1 ? parts.slice(1).join(' - ').trim() : null;
+      const ruang = parts.length > 1 ? parts.slice(1).join(' - ').trim() : (j.ruang || null);
       return {
         jenis: j.jenis,
         tanggal: j.tanggal || null,
@@ -286,7 +397,7 @@ class EtaService {
       });
     }
 
-    // 3. Masukkan data dari jadwal dashboard jika belum ada di candidateMap
+    // 3. Masukkan data dari jadwal (dashboard & e-room) jika belum ada di candidateMap
     for (const j of allJadwal) {
       const titleName = (j.title || '').split(' - ')[0].trim();
       if (!titleName) continue;
@@ -312,24 +423,27 @@ class EtaService {
 
     const matches = Array.from(candidateMap.values());
 
-    // 4. Jika hanya 1 match dan nim/judul masih null, lengkapi via detailSidang
-    if (matches.length === 1 && (!matches[0].nim || !matches[0].judul)) {
-      const firstEvent = matches[0].riwayatSidang[0];
-      if (firstEvent && firstEvent.token) {
-        try {
-          const detail = await this.detailSidang(firstEvent.token);
-          if (detail.peserta && detail.peserta.nim) matches[0].nim = detail.peserta.nim;
-          if (detail.peserta && detail.peserta.prodi) matches[0].prodi = detail.peserta.prodi;
-          if (detail.judul) matches[0].judul = detail.judul;
-          if (detail.penilai && detail.penilai.length) {
-            const dosenObj = {};
-            detail.penilai.forEach((p) => {
-              const roleKey = (p.peran || '').toLowerCase().replace(/\s+/g, '_');
-              dosenObj[roleKey] = { nama: p.nama, nip: p.nip, prodi: p.prodi };
-            });
-            matches[0].dosen = dosenObj;
-          }
-        } catch (_) {}
+    // 4. Jika ada match yang nim/judul masih null, lengkapi via detailSidang
+    for (const m of matches) {
+      if ((!m.nim || !m.judul) && m.riwayatSidang && m.riwayatSidang.length > 0) {
+        // Ambil event dengan token valid
+        const targetEvent = m.riwayatSidang.find((e) => e.token) || m.riwayatSidang[0];
+        if (targetEvent && targetEvent.token) {
+          try {
+            const detail = await this.detailSidang(targetEvent.token);
+            if (detail.peserta && detail.peserta.nim) m.nim = detail.peserta.nim;
+            if (detail.peserta && detail.peserta.prodi) m.prodi = detail.peserta.prodi;
+            if (detail.judul) m.judul = detail.judul;
+            if (detail.penilai && detail.penilai.length && Object.keys(m.dosen || {}).length === 0) {
+              const dosenObj = {};
+              detail.penilai.forEach((p) => {
+                const roleKey = (p.peran || '').toLowerCase().replace(/\s+/g, '_');
+                dosenObj[roleKey] = { nama: p.nama, nip: p.nip, prodi: p.prodi };
+              });
+              m.dosen = dosenObj;
+            }
+          } catch (_) {}
+        }
       }
     }
 
@@ -338,12 +452,22 @@ class EtaService {
 
   /**
    * Hitung data statistik sidang: berapa orang Sempro, Semhas, dan Pendadaran.
-   * @param {object} opts - { bulan, tahun }
+   * Mendukung sumber data dari e-room (seluruh Fakultas Teknik: 3.000+ data),
+   * e-TA dashboard, atau gabungan.
+   * @param {object} opts - { bulan, tahun, source } (source: 'eroom' | 'eta' | 'all')
    */
-  async statistikSidang({ bulan = '', tahun = '' } = {}) {
+  async statistikSidang({ bulan = '', tahun = '', source = 'eroom' } = {}) {
     await this._ensure();
-    const dash = await this.dashboard();
-    const jadwal = dash.jadwal || [];
+
+    let jadwal = [];
+    if (source === 'eta') {
+      const dash = await this.dashboard();
+      jadwal = dash.jadwal || [];
+    } else {
+      // Default: gunakan e-room yang mencakup kalender komprehensif se-Fakultas Teknik
+      const eroom = await this.jadwalSeminarEroom();
+      jadwal = eroom.jadwal || [];
+    }
 
     const monthlyMap = new Map();
     let totalSempro = 0;

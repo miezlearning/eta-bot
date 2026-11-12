@@ -382,6 +382,108 @@ function parseGenericRows(html) {
   return { identity, tables };
 }
 
+/**
+ * Parse kalender jadwal seminar dari halaman /mahasiswa/e-room/lihat_jadwal_seminar.
+ * Berisi ribuan agenda seminar (Sempro, Semhas, Pendadaran) se-Fakultas Teknik.
+ */
+function parseJadwalSeminarEroom(html) {
+  const $ = cheerio.load(html);
+  const identity = parseIdentity($);
+
+  const startIdx = html.indexOf('events: [');
+  if (startIdx === -1) {
+    return { identity, jadwal: [] };
+  }
+  const eventsCloseIdx = html.indexOf('],', startIdx);
+  if (eventsCloseIdx === -1) {
+    return { identity, jadwal: [] };
+  }
+
+  const arrayStr = html.slice(startIdx + 'events:'.length, eventsCloseIdx + 1).trim();
+  let rawEvents = [];
+  try {
+    rawEvents = new Function('return ' + arrayStr)();
+  } catch (e) {
+    return { identity, jadwal: [], error: e.message };
+  }
+
+  const JENIS_WARNA = {
+    '609450': 'Seminar Proposal',
+    '4a8bc2': 'Seminar Hasil',
+    'bd362f': 'Pendadaran',
+  };
+
+  const jadwal = [];
+  for (const e of rawEvents) {
+    if (!e || typeof e !== 'object') continue;
+    const title = (e.title || '').trim();
+    if (!title || title.toLowerCase() === 'tes') continue;
+
+    const dashIdx = title.lastIndexOf(' - ');
+    let nama = title;
+    let ruang = '';
+    if (dashIdx !== -1) {
+      nama = title.slice(0, dashIdx).trim();
+      ruang = title.slice(dashIdx + 3).trim();
+    }
+
+    const hex = (e.backgroundColor || '').replace('#', '').toLowerCase();
+    const jenis = JENIS_WARNA[hex] || 'Sidang Tugas Akhir';
+
+    const rawUrl = (e.url || '').trim();
+    let token = null;
+    if (rawUrl.includes('/informasi_seminar/')) {
+      token = rawUrl.split('/informasi_seminar/')[1].trim();
+    } else if (rawUrl.includes('/informasi_skripsi/')) {
+      token = rawUrl.split('/informasi_skripsi/')[1].trim();
+    }
+
+    let startStr = '';
+    if (typeof e.start === 'string') {
+      startStr = e.start.trim();
+    } else if (e.start instanceof Date) {
+      startStr = e.start.toISOString().replace('T', ' ').slice(0, 19);
+    }
+
+    let endStr = '';
+    if (typeof e.end === 'string') {
+      endStr = e.end.trim();
+    } else if (e.end instanceof Date) {
+      endStr = e.end.toISOString().replace('T', ' ').slice(0, 19);
+    }
+
+    let tanggal = '';
+    let jam = '';
+    let jamSelesai = '';
+
+    if (startStr && /^\d{4}-\d{2}-\d{2}/.test(startStr)) {
+      tanggal = startStr.slice(0, 10);
+      jam = startStr.slice(11, 16);
+    }
+    if (endStr && /^\d{4}-\d{2}-\d{2}/.test(endStr)) {
+      jamSelesai = endStr.slice(11, 16);
+    }
+
+    jadwal.push({
+      title,
+      nama,
+      ruang: ruang || 'belum',
+      jenis,
+      tanggal,
+      jam,
+      jamSelesai,
+      start: startStr,
+      end: endStr,
+      url: rawUrl,
+      token,
+      color: e.backgroundColor || null,
+      source: 'eroom',
+    });
+  }
+
+  return { identity, jadwal };
+}
+
 module.exports = {
   parseJadwalSkripsi,
   parseInformasiSkripsi,
@@ -389,5 +491,6 @@ module.exports = {
   parseProfilMahasiswa,
   parseRuangSeminar,
   parseGenericRows,
+  parseJadwalSeminarEroom,
   clean,
 };

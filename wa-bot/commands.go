@@ -70,6 +70,8 @@ func handleIncoming(chat types.JID, text string) {
 		reply = tanganiStatistik(argumen)
 	case "detail":
 		reply = tanganiDetail(argumen)
+	case "eroom":
+		reply = tanganiEroom(argumen)
 	default:
 		// Command tak dikenal: abaikan (aman untuk grup).
 		return
@@ -101,7 +103,8 @@ func teksBantuan() string {
 		"Pencarian Mahasiswa & Judul:",
 		"/mhs <nama/NIM> -- info judul, dosen pembimbing & penguji, serta riwayat sempro, semhas, & pdd",
 		"/judul <kata kunci> -- cari judul skripsi & dosen penilai",
-		"/detail <NIM/token> -- detail ruang, kapasitas, & SK tim penilai",
+		"/detail <NIM/token> -- detail ruang, kapasitas, SK tim penilai, & audiens hadir",
+		"/eroom <ruang/nama> -- kalender seminar e-room se-Fakultas Teknik",
 		"",
 		"Statistik Sidang:",
 		"/statistik -- statistik sempro, semhas, & pdd bulan ini",
@@ -753,5 +756,58 @@ func tanganiDetail(arg string) string {
 		sb.WriteString("\nMahasiswa Terdaftar Ikut Hadir: Belum ada yang mendaftar\n")
 	}
 
+	return sb.String()
+}
+
+// tanganiEroom: /eroom [kata kunci/ruang/nama]
+func tanganiEroom(arg string) string {
+	q := strings.TrimSpace(arg)
+	if !eta.TryAcquire() {
+		return "Bot sedang memproses permintaan lain, coba lagi beberapa detik."
+	}
+	defer eta.Release()
+
+	res, err := eta.FetchEroomJadwal(q)
+	if err != nil {
+		return "Gagal mengambil jadwal e-room: " + err.Error()
+	}
+	if len(res.Jadwal) == 0 {
+		pesan := "Tidak ada agenda seminar e-room ditemukan"
+		if q != "" {
+			pesan += " untuk kata kunci: " + q
+		}
+		return pesan
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Jadwal Seminar e-Room FT Unmul")
+	if q != "" {
+		sb.WriteString(" (Pencarian: " + q + ")")
+	}
+	sb.WriteString("\nTotal: " + strconv.Itoa(res.Total) + " agenda\n\n")
+
+	const max = 8
+	for i, j := range res.Jadwal {
+		if i == max {
+			sb.WriteString("\n...dan " + strconv.Itoa(len(res.Jadwal)-max) + " agenda lainnya.\n")
+			break
+		}
+		tgl := j.Tanggal
+		if tgl == "" {
+			tgl = "Belum terjadwal"
+		}
+		jam := ""
+		if j.Jam != "" {
+			jam = " (" + j.Jam
+			if j.JamSelesai != "" {
+				jam += "-" + j.JamSelesai
+			}
+			jam += ")"
+		}
+		sb.WriteString(strconv.Itoa(i+1) + ". " + j.Nama + "\n")
+		sb.WriteString("   Ruang: " + j.Ruang + " | Tahap: " + j.Jenis + "\n")
+		sb.WriteString("   Waktu: " + tgl + jam + "\n")
+	}
+	sb.WriteString("\nKetik /detail <nama/NIM> untuk melihat dosen & audiens hadir.")
 	return sb.String()
 }

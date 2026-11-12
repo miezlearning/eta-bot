@@ -758,6 +758,40 @@ async function handleUpdate(update) {
     return;
   }
 
+  // 7. /eroom [kata kunci / ruang / nama]
+  const eroomMatch = text.match(/^\/eroom(?:\s+([\s\S]+))?$/i);
+  if (eroomMatch) {
+    const q = (eroomMatch[1] || '').trim();
+    await sendTyping(chatId);
+    try {
+      const svc = getSvc();
+      await svc.connect();
+      const res = await svc.jadwalSeminarEroom({ q });
+      if (!res.jadwal || res.jadwal.length === 0) {
+        await sendMessage(chatId, `ℹ️ Tidak ada jadwal seminar e-room ditemukan${q ? ` untuk "*${escapeMd(q)}*"` : ''}.`);
+        return;
+      }
+      let reply = `🏢 *Jadwal Seminar e-Room FT Unmul*${q ? ` — Pencarian "*${escapeMd(q)}*"` : ''}\n\n`;
+      reply += `Total ditemukan: *${res.total}* agenda\n\n`;
+      const sample = res.jadwal.slice(0, 8);
+      sample.forEach((j, i) => {
+        const tgl = j.tanggal ? formatTanggalIndo(j.tanggal) : 'Belum terjadwal';
+        const jam = j.jam ? ` (${j.jam}${j.jamSelesai ? '-' + j.jamSelesai : ''} WITA)` : '';
+        reply += `${i + 1}. *${escapeMd(j.nama)}*\n`;
+        reply += `   📍 *Ruang*: \`${escapeMd(j.ruang)}\` | *Tahap*: ${escapeMd(j.jenis)}\n`;
+        reply += `   🗓️ ${tgl}${jam}\n`;
+      });
+      if (res.jadwal.length > 8) {
+        reply += `\n_...dan ${res.jadwal.length - 8} agenda lainnya._\n`;
+      }
+      reply += '\n💡 _Ketik `/detail <nama/NIM>` untuk melihat dosen penilai & audiens hadir._';
+      await sendMessage(chatId, reply);
+    } catch (e) {
+      await sendMessage(chatId, '⚠️ Gagal mengambil jadwal e-room: ' + (e.message || 'kesalahan tidak dikenal'));
+    }
+    return;
+  }
+
   // Jika command diawali '/' tapi tidak dikenali
   await sendMessage(chatId, 'Perintah tidak dikenali.\n\n' + helpText());
 }
@@ -765,11 +799,12 @@ async function handleUpdate(update) {
 /** Teks bantuan command. */
 function helpText() {
   return (
-    '📋 *Bot e-TA FT Unmul — Menu Layanan*\n\n' +
+    '📋 *Bot e-TA & e-Room FT Unmul — Menu Layanan*\n\n' +
     '🎓 *Pencarian Mahasiswa & Judul:*\n' +
     '`/mhs <nama/NIM>` — info lengkap mahasiswa: judul TA, dosen pembimbing & penguji, serta riwayat sempro, semhas, & pdd\n' +
     '`/judul <kata kunci>` — cari judul skripsi & dosen penilai\n' +
-    '`/detail <NIM/token>` — rincian ruang, kapasitas, & SK tim penilai sidang\n\n' +
+    '`/detail <NIM/token>` — rincian ruang, kapasitas, SK tim penilai, & daftar hadir audiens\n' +
+    '`/eroom <ruang/nama>` — kalender seminar e-room se-Fakultas Teknik (3.000+ agenda)\n\n' +
     '📊 *Statistik Sidang:*\n' +
     '`/statistik` — statistik sempro, semhas, & pdd bulan ini\n' +
     '`/statistik <bulan/tahun>` — contoh: `/statistik november`, `/statistik 2026-06`, `/statistik 2026`\n\n' +

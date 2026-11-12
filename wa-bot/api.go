@@ -281,6 +281,33 @@ func (a *EtaAPI) FetchDetailSidang(token string) (*detailSidangResponse, error) 
 	return &out, nil
 }
 
+// eroomItem holds single seminar event from e-room
+type eroomItem struct {
+	Title      string `json:"title"`
+	Nama       string `json:"nama"`
+	Ruang      string `json:"ruang"`
+	Jenis      string `json:"jenis"`
+	Tanggal    string `json:"tanggal"`
+	Jam        string `json:"jam"`
+	JamSelesai string `json:"jamSelesai"`
+	Token      string `json:"token"`
+}
+
+type eroomResponse struct {
+	Total  int         `json:"total"`
+	Jadwal []eroomItem `json:"jadwal"`
+}
+
+// FetchEroomJadwal mencari jadwal seminar dari modul e-room.
+func (a *EtaAPI) FetchEroomJadwal(query string) (*eroomResponse, error) {
+	var out eroomResponse
+	path := "/api/eroom/jadwal?q=" + strings.ReplaceAll(strings.TrimSpace(query), " ", "%20")
+	if err := a.fetchJSON(path, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // FetchHealth mengambil status API e-TA.
 func (a *EtaAPI) FetchHealth() (*healthResponse, error) {
 	var out healthResponse

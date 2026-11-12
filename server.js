@@ -166,22 +166,45 @@ app.get('/api/mahasiswa/:query', asyncHandler(async (req, res) => {
 
 // --- Data statistik sidang (jumlah sempro, semhas, pendadaran per bulan/tahun) ---
 app.get('/api/statistik', asyncHandler(async (req, res) => {
-  const { bulan, tahun } = req.query;
-  const data = await svc.statistikSidang({ bulan, tahun });
+  const { bulan, tahun, source } = req.query;
+  const data = await svc.statistikSidang({ bulan, tahun, source });
+  res.json(data);
+}));
+
+// --- e-Room: Kalender & Detail Seminar se-Fakultas Teknik ---
+app.get('/api/eroom/jadwal', asyncHandler(async (req, res) => {
+  const { q, nama, jenis, ruang, tanggal, bulan, tahun, refresh } = req.query;
+  const data = await svc.jadwalSeminarEroom({
+    q,
+    nama,
+    jenis,
+    ruang,
+    tanggal,
+    bulan,
+    tahun,
+    forceRefresh: refresh === 'true' || refresh === '1',
+  });
+  res.json(data);
+}));
+
+app.get('/api/eroom/sidang/:token', asyncHandler(async (req, res) => {
+  const data = await svc.detailSidang(req.params.token, { source: 'eroom' });
   res.json(data);
 }));
 
 // --- Root ---
 app.get('/', (req, res) => {
   res.json({
-    service: 'e-TA FT Unmul REST API',
+    service: 'e-TA & e-Room FT Unmul REST API',
     endpoints: {
       health: '/api/health',
       dashboard: '/api/dashboard',
       'jadwal (search)': '/api/jadwal/sidang?nama=&nim=&prodi=&q=&enrich=',
       'judul (search)': '/api/judul-skripsi?nama=&nim=&q=',
       'mahasiswa (detail & timeline)': '/api/mahasiswa?q= (atau /api/mahasiswa/:query)',
-      'statistik sidang': '/api/statistik?bulan=YYYY-MM&tahun=YYYY',
+      'statistik sidang': '/api/statistik?bulan=YYYY-MM&tahun=YYYY&source=eroom|eta',
+      'eroom jadwal (se-FT)': '/api/eroom/jadwal?q=&jenis=&ruang=&tanggal=&bulan=&tahun=&refresh=',
+      'eroom sidang (detail & audiens)': '/api/eroom/sidang/:token',
       'data proposal': '/api/data/proposal',
       'data hasil': '/api/data/hasil',
       'data pendadaran': '/api/data/pendadaran',
