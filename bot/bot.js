@@ -714,7 +714,7 @@ async function handleUpdate(update) {
     try {
       const svc = getSvc();
       await svc.connect();
-      const data = await svc.jadwalSkripsi({ enrich: false, useCache: true });
+      const data = await svc.jadwalSeminarEroom().catch(() => svc.jadwalSkripsi({ enrich: false, useCache: true }));
 
       const today = new Date();
       const namaHari = NAMA_HARI[today.getDay()];

@@ -92,14 +92,27 @@ app.get('/api/dashboard', asyncHandler(async (req, res) => {
 
 // --- Jadwal sidang (kalender) ---
 app.get('/api/jadwal/sidang', asyncHandler(async (req, res) => {
-  const { enrich, q, nama, nim, prodi, useCache } = req.query;
-  const data = await svc.jadwalSkripsi({
-    enrich: enrich === 'true' || enrich === '1',
-    useCache: useCache === undefined || useCache === 'true' || useCache === '1',
-    q: q || '',
+  const { enrich, q, nama, nim, prodi, ruang, tanggal, bulan, tahun, useCache, source } = req.query;
+  if (source === 'eta') {
+    const data = await svc.jadwalSkripsi({
+      enrich: enrich === 'true' || enrich === '1',
+      useCache: useCache === undefined || useCache === 'true' || useCache === '1',
+      q: q || '',
+      nama: nama || '',
+      nim: nim || '',
+      prodi: prodi || '',
+    });
+    return res.json(data);
+  }
+
+  // Default: gunakan e-room (kalender komprehensif seluruh Fakultas Teknik)
+  const data = await svc.jadwalSeminarEroom({
+    q: q || nama || nim || '',
     nama: nama || '',
-    nim: nim || '',
-    prodi: prodi || '',
+    ruang: ruang || '',
+    tanggal: tanggal || '',
+    bulan: bulan || '',
+    tahun: tahun || '',
   });
   res.json(data);
 }));
