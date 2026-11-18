@@ -71,6 +71,8 @@ func handleIncoming(chat types.JID, text string) {
 		reply = tanganiStatistik(argumen)
 	case "tercepat", "cepat", "leaderboard":
 		reply = tanganiTercepat(argumen)
+	case "terlambat", "lambat", "pelan":
+		reply = tanganiTerlambat(argumen)
 	case "detail":
 		reply = tanganiDetail(argumen)
 	case "eroom":
@@ -113,6 +115,7 @@ func teksBantuan() string {
 		"/statistik -- statistik sempro, semhas, & pdd bulan ini",
 		"/statistik <bulan/tahun> -- contoh: /statistik november, /statistik 2026-06, /statistik 2026",
 		"/tercepat -- peringkat tercepat sempro → pendadaran (se-FT)",
+		"/terlambat -- kebalikannya: durasi paling lama (filter sama)",
 		"/tercepat angkatan 2022 -- filter angkatan (dari NIM)",
 		"/tercepat nama <nama> / nim <NIM> -- cari orang tertentu",
 		"/tercepat dosen <nama> / judul <kata> / ruang <kode> -- filter lanjutan",
@@ -1049,7 +1052,7 @@ func normAngkatan(s string) string {
 //	/tercepat nim 2209 judul performansi
 //	/tercepat budi 2
 func parseFilterTercepat(arg string) filterTercepat {
-	f := filterTercepat{Batas: 10, Halaman: 1}
+	f := filterTercepat{Batas: 20, Halaman: 1}
 	fields := strings.Fields(strings.TrimSpace(arg))
 
 	if len(fields) > 0 {
@@ -1065,7 +1068,7 @@ func parseFilterTercepat(arg string) filterTercepat {
 	for _, v := range fields {
 		l := strings.ToLower(v)
 		if l == "semua" || l == "all" {
-			f.Batas = 25
+			f.Batas = 50
 			continue
 		}
 		sisa = append(sisa, v)
@@ -1197,9 +1200,9 @@ func (f filterTercepat) keArg() string {
 	if f.Ruang != "" {
 		parts = append(parts, "ruang", f.Ruang)
 	}
-	if f.Batas == 25 {
+	if f.Batas == 50 {
 		parts = append(parts, "semua")
-	} else if f.Batas != 10 {
+	} else if f.Batas != 20 {
 		parts = append(parts, "top", strconv.Itoa(f.Batas))
 	}
 	return strings.Join(parts, " ")
@@ -1231,10 +1234,9 @@ func cocokFilterTercepat(h kecepatanItem, f filterTercepat) bool {
 	return true
 }
 
-// hitungTercepat menyusun peringkat mahasiswa berdasarkan durasi tercepat
-// dari Seminar Proposal ke Pendadaran. Data judul skripsi dipakai untuk
-// melengkapi NIM/angkatan/dosen dan menyaring hasil.
-func hitungTercepat(jadwal []eroomItem, daftarJudul []judulItem, f filterTercepat, hariIni time.Time) []kecepatanItem {
+// hitungPeringkat menyusun peringkat mahasiswa berdasarkan durasi Sempro ke
+// Pendadaran. lambat=true membalik urutan (paling lama lebih dulu).
+func hitungPeringkat(jadwal []eroomItem, daftarJudul []judulItem, f filterTercepat, hariIni time.Time, lambat bool) []kecepatanItem {
 	judulMap := make(map[string]judulItem, len(daftarJudul))
 	for _, item := range daftarJudul {
 		key := normalisasiNama(item.Nama)
@@ -1342,6 +1344,9 @@ func hitungTercepat(jadwal []eroomItem, daftarJudul []judulItem, f filterTercepa
 
 	sort.Slice(hasil, func(i, j int) bool {
 		if hasil[i].Hari != hasil[j].Hari {
+			if lambat {
+				return hasil[i].Hari > hasil[j].Hari
+			}
 			return hasil[i].Hari < hasil[j].Hari
 		}
 		return normalisasiNama(hasil[i].Nama) < normalisasiNama(hasil[j].Nama)
@@ -1350,6 +1355,11 @@ func hitungTercepat(jadwal []eroomItem, daftarJudul []judulItem, f filterTercepa
 		hasil[i].Peringkat = i + 1
 	}
 	return hasil
+}
+
+// hitungTercepat dipakai test dan command /tercepat.
+func hitungTercepat(jadwal []eroomItem, daftarJudul []judulItem, f filterTercepat, hariIni time.Time) []kecepatanItem {
+	return hitungPeringkat(jadwal, daftarJudul, f, hariIni, false)
 }
 
 // nimPrefix mengambil 4 digit kode prodi dari NIM (misal 2209106125 -> 0910).
@@ -1448,13 +1458,26 @@ func formatTglPendek(tgl string) string {
 	return tgl[8:10] + "/" + tgl[5:7] + "/" + tgl[:4]
 }
 
-// tanganiTercepat menampilkan peringkat sekaligus berguna untuk mencari orang.
-func tanganiTercepat(arg string) string {
+// formatTglRingkas mengubah YYYY-MM-DD menjadi DD/MM/YY.
+func formatTglRingkas(tgl string) string {
+	if len(tgl) < 10 {
+		return tgl
+	}
+	return tgl[8:10] + "/" + tgl[5:7] + "/" + tgl[2:4]
+}
+
+// tanganiPeringkat dipakai /tercepat maupun /terlambat.
+func tanganiPeringkat(arg string, lambat bool) string {
 	f := parseFilterTercepat(arg)
 	if !eta.TryAcquire() {
 		return "Bot sedang memproses permintaan lain, coba lagi beberapa detik."
 	}
 	defer eta.Release()
+
+	judul, emoji, cmd := "Paling Cepat", "🏆", "/tercepat"
+	if lambat {
+		judul, emoji, cmd = "Paling Lambat", "🐢", "/terlambat"
+	}
 
 	res, err := eta.FetchEroomSemua()
 	if err != nil {
@@ -1473,9 +1496,9 @@ func tanganiTercepat(arg string) string {
 	}
 	seedProdiDariJudul(daftarJudul, identitasJudul["prodi"])
 
-	hasil := hitungTercepat(res.Jadwal, daftarJudul, f, time.Now())
+	hasil := hitungPeringkat(res.Jadwal, daftarJudul, f, time.Now(), lambat)
 	if f.Prodi != "" {
-		needed := f.Batas + f.Halaman*8
+		needed := f.Batas + f.Halaman*10
 		hasil = enrichProdi(hasil, f.Prodi, func(token string) (string, string, error) {
 			d, err := eta.FetchEroomDetail(token)
 			if err != nil {
@@ -1492,7 +1515,7 @@ func tanganiTercepat(arg string) string {
 		hasil = hasil[:f.Batas]
 	}
 
-	const pageSize = 8
+	const pageSize = 10
 	totalPages := (len(hasil) + pageSize - 1) / pageSize
 	if totalPages < 1 {
 		totalPages = 1
@@ -1511,25 +1534,25 @@ func tanganiTercepat(arg string) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("Peringkat Tercepat Sempro → Pendadaran\n")
-	sb.WriteString("Sumber: e-room se-FT · pendadaran sudah berlalu\n")
-	sb.WriteString("Filter: " + f.label() + "\n")
-	sb.WriteString("Mahasiswa cocok: " + strconv.Itoa(total) + " (ditampilkan maks. " + strconv.Itoa(f.Batas) + ")\n\n")
+	sb.WriteString("*" + emoji + " " + judul + ": Sempro → Pendadaran*\n")
+	sb.WriteString("_e-room se-FT · pendadaran berlalu · " + f.label() + "_\n")
+	sb.WriteString("Ditemukan " + strconv.Itoa(total) + " mahasiswa · halaman " + strconv.Itoa(page) + "/" + strconv.Itoa(totalPages) + "\n\n")
 	for _, h := range hasil[start:end] {
-		sb.WriteString(strconv.Itoa(h.Peringkat) + ". " + h.Nama + " -- " + formatDurasi(h.Hari) + "\n")
-		identitas := ""
+		sb.WriteString("*" + strconv.Itoa(h.Peringkat) + ". " + h.Nama + "* — *" + strconv.Itoa(h.Hari) + " hari*")
+		detail := []string{}
 		if h.Angkatan != "" {
-			identitas += h.Angkatan + " · "
+			detail = append(detail, h.Angkatan)
 		}
 		if h.Prodi != "" {
-			identitas += h.Prodi + " · "
+			detail = append(detail, h.Prodi)
 		}
 		if h.NIM != "" {
-			identitas += h.NIM + " · "
+			detail = append(detail, h.NIM)
 		}
-		sb.WriteString("   " + identitas + formatTglPendek(h.Sempro) + " → " + formatTglPendek(h.Pendadaran) + "\n")
+		detail = append(detail, formatTglRingkas(h.Sempro)+"→"+formatTglRingkas(h.Pendadaran))
+		sb.WriteString(" · " + strings.Join(detail, " · ") + "\n")
 	}
-	sb.WriteString("\nDurasi dihitung dari Sempro tercepat ke Pendadaran pertama.")
+	sb.WriteString("\n_Durasi dihitung dari Sempro tercepat ke Pendadaran pertama._")
 	if totalPages > 1 {
 		nextPage := page + 1
 		if nextPage > totalPages {
@@ -1539,7 +1562,10 @@ func tanganiTercepat(arg string) string {
 		if argLanjutan != "" {
 			argLanjutan += " "
 		}
-		sb.WriteString("\nKetik: /tercepat " + argLanjutan + strconv.Itoa(nextPage) + " untuk halaman berikutnya.")
+		sb.WriteString("\nLanjut: `" + cmd + " " + argLanjutan + strconv.Itoa(nextPage) + "`")
 	}
 	return sb.String()
 }
+
+func tanganiTercepat(arg string) string  { return tanganiPeringkat(arg, false) }
+func tanganiTerlambat(arg string) string { return tanganiPeringkat(arg, true) }

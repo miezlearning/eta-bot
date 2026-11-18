@@ -332,7 +332,8 @@ wa-bot/
 | `/detail <NIM/token>` | Rincian ruang, kapasitas, SK penilai sidang, & daftar peserta/audiens hadir |
 | `/eroom [ruang/nama] [hal]` | Cari jadwal seminar e-room se-Fakultas Teknik (3.300+ agenda) + pagination halaman |
 | `/statistik [periode] [hal]` | Statistik berapa orang sempro, semhas, & pendadaran (se-FT) + pagination daftar sidang |
-| `/tercepat [filter] [hal]` | Peringkat tercepat Sempro → Pendadaran + pencarian orang: filter angkatan, nama, NIM, dosen, judul, ruang, tahun |
+| `/tercepat [filter] [hal]` | Peringkat tercepat Sempro → Pendadaran + pencarian orang: filter angkatan, nama, NIM, prodi, dosen, judul, ruang, tahun |
+| `/terlambat [filter] [hal]` | Kebalikan `/tercepat`: durasi Sempro → Pendadaran paling lama (filter sama) |
 | `/jadwal` | Jadwal sidang hari ini |
 | `/jadwal besok` / `lusa` / `kemarin` | Jadwal tanggal relatif |
 | `/jadwal kamis` (dst.) | Jadwal hari tersebut di pekan mendatang |
@@ -360,10 +361,14 @@ Filter bisa digabung, diikuti nomor halaman di akhir:
 | Dosen | `/tercepat dosen Fahrul Agus` | Pembimbing/penguji dari data judul |
 | Judul | `/tercepat judul performansi` | Kata kunci judul skripsi |
 | Ruang | `/tercepat ruang D209` | Ruang pendadaran di e-room |
-| Jumlah | `/tercepat semua`, `/tercepat top 5` | Bawaan 10, `semua` = 25 |
+| Jumlah | `/tercepat semua`, `/tercepat top 5` | Bawaan 20 (10 per halaman), `semua` = 50 |
 | Halaman | `/tercepat angkatan 2022 2` | Nomor di akhir |
 
 Contoh gabungan: `/tercepat angkatan 2022 dosen Fahrul tahun 2026 2`.
+
+Tampilan memakai markdown WhatsApp (`*tebal*`, `_miring_`, `` `kode` ``) dengan
+satu baris per mahasiswa agar 10 entri muat dalam satu pesan. `/terlambat`
+menerima filter yang sama dan mengurutkan durasi dari yang paling lama.
 
 Catatan filter prodi: daftar e-room tidak memuat prodi, jadi prodi diambil dari
 halaman **detail e-room** (`/api/eroom/sidang/:token`, field `peserta.prodi`).

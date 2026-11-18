@@ -179,7 +179,7 @@ func TestTanganiTercepat(t *testing.T) {
 	defer func() { eta = lama }()
 
 	pesan := tanganiTercepat("")
-	for _, ingin := range []string{"Siti Aminah", "20 hari", "01/02/2026", "Budi Santoso", "50 hari", "10/01/2026", "2022", "2209106125"} {
+	for _, ingin := range []string{"Siti Aminah", "20 hari", "01/02/26", "Budi Santoso", "50 hari", "10/01/26", "2022", "2209106125", "*1. Siti Aminah*", "halaman 1/1"} {
 		if !strings.Contains(pesan, ingin) {
 			t.Errorf("balasan tidak memuat %q:\n%s", ingin, pesan)
 		}
@@ -198,6 +198,15 @@ func TestTanganiTercepat(t *testing.T) {
 	if !strings.Contains(pesan, "Tidak ada mahasiswa cocok") {
 		t.Errorf("filter prodi Teknik Elektro harus kosong:\n%s", pesan)
 	}
+
+	lambat := tanganiTerlambat("")
+	if !strings.Contains(lambat, "Paling Lambat") || !strings.Contains(lambat, "*1. Budi Santoso*") ||
+		!strings.Contains(lambat, "*2. Siti Aminah*") {
+		t.Errorf("urutan /terlambat salah:\n%s", lambat)
+	}
+	if strings.Index(lambat, "Budi Santoso") > strings.Index(lambat, "Siti Aminah") {
+		t.Errorf("Budi harus muncul sebelum Siti pada /terlambat:\n%s", lambat)
+	}
 }
 
 func TestParseFilterTercepat(t *testing.T) {
@@ -213,13 +222,13 @@ func TestParseFilterTercepat(t *testing.T) {
 		halaman  int
 		batas    int
 	}{
-		{arg: "angkatan 2022 dosen Fahrul Agus tahun 2026 2", angkatan: "2022", dosen: "Fahrul Agus", tahun: "2026", halaman: 2, batas: 10},
-		{arg: "nim 2209 judul performansi", nim: "2209", judul: "performansi", halaman: 1, batas: 10},
-		{arg: "prodi Teknik Elektro angkatan 2022", prodi: "Teknik Elektro", angkatan: "2022", halaman: 1, batas: 10},
-		{arg: "budi 3", nama: "budi", halaman: 3, batas: 10},
-		{arg: "semua", halaman: 1, batas: 25},
+		{arg: "angkatan 2022 dosen Fahrul Agus tahun 2026 2", angkatan: "2022", dosen: "Fahrul Agus", tahun: "2026", halaman: 2, batas: 20},
+		{arg: "nim 2209 judul performansi", nim: "2209", judul: "performansi", halaman: 1, batas: 20},
+		{arg: "prodi Teknik Elektro angkatan 2022", prodi: "Teknik Elektro", angkatan: "2022", halaman: 1, batas: 20},
+		{arg: "budi 3", nama: "budi", halaman: 3, batas: 20},
+		{arg: "semua", halaman: 1, batas: 50},
 		{arg: "top 5", halaman: 1, batas: 5},
-		{arg: "angkatan 22", angkatan: "2022", halaman: 1, batas: 10},
+		{arg: "angkatan 22", angkatan: "2022", halaman: 1, batas: 20},
 	}
 	for _, c := range cases {
 		f := parseFilterTercepat(c.arg)
