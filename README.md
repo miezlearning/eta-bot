@@ -356,6 +356,7 @@ Filter bisa digabung, diikuti nomor halaman di akhir:
 | Tahun pendadaran | `/tercepat tahun 2026` | Angka 4 digit saja juga diterima |
 | Nama | `/tercepat nama budi` | Bisa langsung `/tercepat budi` |
 | NIM | `/tercepat nim 2209` | Substring NIM |
+| Prodi | `/tercepat prodi Informatika` | Dari NIM (prodi akun) + detail e-room; di-cache per nama & prefiks NIM |
 | Dosen | `/tercepat dosen Fahrul Agus` | Pembimbing/penguji dari data judul |
 | Judul | `/tercepat judul performansi` | Kata kunci judul skripsi |
 | Ruang | `/tercepat ruang D209` | Ruang pendadaran di e-room |
@@ -363,8 +364,14 @@ Filter bisa digabung, diikuti nomor halaman di akhir:
 | Halaman | `/tercepat angkatan 2022 2` | Nomor di akhir |
 
 Contoh gabungan: `/tercepat angkatan 2022 dosen Fahrul tahun 2026 2`.
-Filter **prodi** belum tersedia di data e-room/judul secara massal; gunakan
-`/mhs <nama>` untuk melihat prodi satu mahasiswa.
+
+Catatan filter prodi: daftar e-room tidak memuat prodi, jadi prodi diambil dari
+halaman **detail e-room** (`/api/eroom/sidang/:token`, field `peserta.prodi`).
+Untuk prodi akun sendiri, NIM dari `/api/judul-skripsi` langsung dipakai tanpa
+request tambahan. Untuk prodi lain, bot melakukan satu pencarian detail per
+mahasiswa saat pertama kali ditemui, lalu menyimpan hasilnya di cache (per nama
+dan per 4 digit kode prodi pada NIM) agar query berikutnya cepat. Contoh:
+`/tercepat prodi "Teknik Elektro"`.
 
 ### Cara jalan (lokal — butuh proses persisten)
 

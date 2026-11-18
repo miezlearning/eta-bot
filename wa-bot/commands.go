@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -115,6 +116,7 @@ func teksBantuan() string {
 		"/tercepat angkatan 2022 -- filter angkatan (dari NIM)",
 		"/tercepat nama <nama> / nim <NIM> -- cari orang tertentu",
 		"/tercepat dosen <nama> / judul <kata> / ruang <kode> -- filter lanjutan",
+		"/tercepat prodi <nama> -- peringkat tercepat satu program studi",
 		"/tercepat tahun 2026 -- pendadaran tahun 2026; tambahkan angka di akhir untuk halaman",
 		"",
 		"Jadwal Sidang:",
@@ -969,11 +971,13 @@ type kecepatanItem struct {
 	Nama       string
 	NIM        string
 	Angkatan   string
+	Prodi      string
 	Judul      string
 	Dosen      string
 	Ruang      string
 	Sempro     string // YYYY-MM-DD
 	Pendadaran string // YYYY-MM-DD
+	Token      string
 	Hari       int
 	Peringkat  int
 }
@@ -984,6 +988,7 @@ type filterTercepat struct {
 	Angkatan string
 	NIM      string
 	Nama     string
+	Prodi    string
 	Dosen    string
 	Judul    string
 	Ruang    string
@@ -997,7 +1002,13 @@ type agregatKecepatan struct {
 	sempro string
 	pdd    string
 	ruang  string
+	token  string
 }
+
+var (
+	prodiPrefixCache sync.Map // prefix NIM (4 digit) -> nama prodi
+	prodiNamaCache   sync.Map // nama dinormalisasi -> nama prodi
+)
 
 // normalisasiNama dipakai sebagai kunci pengelompokan antar event e-room.
 func normalisasiNama(s string) string {
@@ -1007,7 +1018,7 @@ func normalisasiNama(s string) string {
 // kunciFilterTercepat adalah kata kunci yang harus diikuti nilai.
 var kunciFilterTercepat = map[string]bool{
 	"angkatan": true, "tahun": true, "nim": true, "nama": true,
-	"dosen": true, "judul": true, "ruang": true, "top": true,
+	"prodi": true, "dosen": true, "judul": true, "ruang": true, "top": true,
 }
 
 // angkatanDariNIM mengubah dua digit awal NIM menjadi tahun angkatan.
@@ -1113,6 +1124,8 @@ func parseFilterTercepat(arg string) filterTercepat {
 			f.NIM = nilai
 		case "nama":
 			f.Nama = nilai
+		case "prodi":
+			f.Prodi = nilai
 		case "dosen":
 			f.Dosen = nilai
 		case "judul":
@@ -1138,6 +1151,9 @@ func (f filterTercepat) label() string {
 	}
 	if f.Nama != "" {
 		parts = append(parts, "nama '"+f.Nama+"'")
+	}
+	if f.Prodi != "" {
+		parts = append(parts, "prodi '"+f.Prodi+"'")
 	}
 	if f.Dosen != "" {
 		parts = append(parts, "dosen '"+f.Dosen+"'")
@@ -1169,6 +1185,9 @@ func (f filterTercepat) keArg() string {
 	if f.Nama != "" {
 		parts = append(parts, "nama", f.Nama)
 	}
+	if f.Prodi != "" {
+		parts = append(parts, "prodi", f.Prodi)
+	}
 	if f.Dosen != "" {
 		parts = append(parts, "dosen", f.Dosen)
 	}
@@ -1195,6 +1214,9 @@ func cocokFilterTercepat(h kecepatanItem, f filterTercepat) bool {
 		return false
 	}
 	if f.Nama != "" && !strings.Contains(normalisasiNama(h.Nama), normalisasiNama(f.Nama)) {
+		return false
+	}
+	if f.Prodi != "" && h.Prodi != "" && !strings.Contains(normalisasiNama(h.Prodi), normalisasiNama(f.Prodi)) {
 		return false
 	}
 	if f.Dosen != "" && !strings.Contains(normalisasiNama(h.Dosen), normalisasiNama(f.Dosen)) {
@@ -1271,6 +1293,7 @@ func hitungTercepat(jadwal []eroomItem, daftarJudul []judulItem, f filterTercepa
 		} else if a.pdd == "" || tgl < a.pdd {
 			a.pdd = tgl
 			a.ruang = strings.TrimSpace(j.Ruang)
+			a.token = j.Token
 		}
 	}
 
@@ -1294,6 +1317,7 @@ func hitungTercepat(jadwal []eroomItem, daftarJudul []judulItem, f filterTercepa
 			Ruang:      a.ruang,
 			Sempro:     a.sempro,
 			Pendadaran: a.pdd,
+			Token:      a.token,
 			Hari:       hari,
 		}
 		if item, ada := judulMap[normalisasiNama(a.nama)]; ada {
@@ -1326,6 +1350,83 @@ func hitungTercepat(jadwal []eroomItem, daftarJudul []judulItem, f filterTercepa
 		hasil[i].Peringkat = i + 1
 	}
 	return hasil
+}
+
+// nimPrefix mengambil 4 digit kode prodi dari NIM (misal 2209106125 -> 0910).
+func nimPrefix(nim string) string {
+	if len(nim) < 6 {
+		return ""
+	}
+	for _, r := range nim[:6] {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return nim[2:6]
+}
+
+// seedProdiDariJudul memakai prodi identitas akun untuk NIM yang ada di daftar
+// judul (endpoint judul hanya menampilkan prodi akun yang login).
+func seedProdiDariJudul(daftarJudul []judulItem, identityProdi string) {
+	if identityProdi == "" || len(daftarJudul) == 0 {
+		return
+	}
+	p := nimPrefix(daftarJudul[0].NIM)
+	if p == "" {
+		return
+	}
+	prodiPrefixCache.LoadOrStore(p, identityProdi)
+	prodiNamaCache.LoadOrStore(normalisasiNama(daftarJudul[0].Nama), identityProdi)
+}
+
+// enrichProdi menyaring hasil berdasarkan prodi. NIM & prodi diambil dari
+// detail e-room lalu di-cache per prefix NIM, sehingga cukup satu request
+// untuk setiap prodi, bukan satu request per mahasiswa.
+func enrichProdi(hasil []kecepatanItem, filterProdi string, ambil func(token string) (nim, prodi string, err error), needed int) []kecepatanItem {
+	if strings.TrimSpace(filterProdi) == "" {
+		return hasil
+	}
+	target := normalisasiNama(filterProdi)
+	out := make([]kecepatanItem, 0)
+	for _, h := range hasil {
+		if h.Prodi == "" {
+			if p := nimPrefix(h.NIM); p != "" {
+				if v, ok := prodiPrefixCache.Load(p); ok {
+					h.Prodi = v.(string)
+				}
+			}
+		}
+		if h.Prodi == "" {
+			if v, ok := prodiNamaCache.Load(normalisasiNama(h.Nama)); ok {
+				h.Prodi = v.(string)
+			}
+		}
+		if h.Prodi == "" && h.Token != "" {
+			nim, prodi, err := ambil(h.Token)
+			if err == nil {
+				h.Prodi = prodi
+				if prodi != "" {
+					prodiNamaCache.Store(normalisasiNama(h.Nama), prodi)
+					if p := nimPrefix(nim); p != "" {
+						prodiPrefixCache.Store(p, prodi)
+					}
+				}
+			}
+		}
+		if h.Prodi == "" {
+			continue
+		}
+		if strings.Contains(normalisasiNama(h.Prodi), target) {
+			out = append(out, h)
+			if len(out) >= needed {
+				break
+			}
+		}
+	}
+	for i := range out {
+		out[i].Peringkat = i + 1
+	}
+	return out
 }
 
 // formatDurasi menampilkan jumlah hari plus perkiraan bulan.
@@ -1363,15 +1464,26 @@ func tanganiTercepat(arg string) string {
 		return "Data jadwal e-room belum tersedia."
 	}
 
-	daftarJudul, _, err := eta.FetchJudul("")
+	daftarJudul, identitasJudul, err := eta.FetchJudul("")
 	if err != nil {
 		if f.Angkatan != "" || f.NIM != "" || f.Dosen != "" || f.Judul != "" {
 			return "Gagal mengambil data judul skripsi: " + err.Error()
 		}
 		daftarJudul = nil
 	}
+	seedProdiDariJudul(daftarJudul, identitasJudul["prodi"])
 
 	hasil := hitungTercepat(res.Jadwal, daftarJudul, f, time.Now())
+	if f.Prodi != "" {
+		needed := f.Batas + f.Halaman*8
+		hasil = enrichProdi(hasil, f.Prodi, func(token string) (string, string, error) {
+			d, err := eta.FetchEroomDetail(token)
+			if err != nil {
+				return "", "", err
+			}
+			return d.Peserta.NIM, d.Peserta.Prodi, nil
+		}, needed)
+	}
 	if len(hasil) == 0 {
 		return "Tidak ada mahasiswa cocok dengan filter: " + f.label() + "."
 	}
@@ -1408,6 +1520,9 @@ func tanganiTercepat(arg string) string {
 		identitas := ""
 		if h.Angkatan != "" {
 			identitas += h.Angkatan + " · "
+		}
+		if h.Prodi != "" {
+			identitas += h.Prodi + " · "
 		}
 		if h.NIM != "" {
 			identitas += h.NIM + " · "

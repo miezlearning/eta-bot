@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -312,6 +313,16 @@ func (a *EtaAPI) FetchEroomJadwal(query string) (*eroomResponse, error) {
 func (a *EtaAPI) FetchEroomSemua() (*eroomResponse, error) {
 	var out eroomResponse
 	if err := a.fetchJSON("/api/eroom/jadwal", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// FetchEroomDetail mengambil detail sidang e-room (berisi NIM & prodi peserta).
+func (a *EtaAPI) FetchEroomDetail(token string) (*detailSidangResponse, error) {
+	var out detailSidangResponse
+	path := "/api/eroom/sidang/" + url.PathEscape(token)
+	if err := a.fetchJSON(path, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

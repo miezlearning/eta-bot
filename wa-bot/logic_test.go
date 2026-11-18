@@ -5,9 +5,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+func resetCacheProdi() {
+	prodiPrefixCache = sync.Map{}
+	prodiNamaCache = sync.Map{}
+}
 
 func TestTglDariArgumen(t *testing.T) {
 	cases := []struct {
@@ -140,13 +146,14 @@ func TestHitungTercepat(t *testing.T) {
 }
 
 func TestTanganiTercepat(t *testing.T) {
+	resetCacheProdi()
 	payloadEroom := `{"total":2,"jadwal":[
 		{"nama":"Budi Santoso","jenis":"Seminar Proposal","tanggal":"2026-01-10"},
 		{"nama":"Budi Santoso","jenis":"Pendadaran","tanggal":"2026-03-01"},
 		{"nama":"Siti Aminah","jenis":"Seminar Proposal","tanggal":"2026-02-01"},
 		{"nama":"Siti Aminah","jenis":"Pendadaran","tanggal":"2026-02-21"}
 	]}`
-	payloadJudul := `{"daftar":[
+	payloadJudul := `{"identity":{"prodi":"Informatika"},"daftar":[
 		{"nama":"Siti Aminah","nim":"2209106125","judul":"Sistem Deteksi Performansi",
 		 "dosen":{"pembimbing_1":{"nama":"Fahrul Agus"}}},
 		{"nama":"Budi Santoso","nim":"2309104321","judul":"Analisis Sentimen",
@@ -154,11 +161,13 @@ func TestTanganiTercepat(t *testing.T) {
 	]}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/api/eroom/jadwal":
+		switch {
+		case r.URL.Path == "/api/eroom/jadwal":
 			io.WriteString(w, payloadEroom)
-		case "/api/judul-skripsi":
+		case r.URL.Path == "/api/judul-skripsi":
 			io.WriteString(w, payloadJudul)
+		case strings.HasPrefix(r.URL.Path, "/api/eroom/sidang/"):
+			io.WriteString(w, `{"peserta":{"nim":"2209076036","prodi":"Teknik Elektro"}}`)
 		default:
 			t.Errorf("path API tidak terduga: %q", r.URL.Path)
 		}
@@ -180,6 +189,15 @@ func TestTanganiTercepat(t *testing.T) {
 	if !strings.Contains(pesan, "Siti Aminah") || strings.Contains(pesan, "Budi Santoso") {
 		t.Errorf("filter angkatan 2022 salah:\n%s", pesan)
 	}
+
+	pesan = tanganiTercepat("prodi Informatika")
+	if !strings.Contains(pesan, "Siti Aminah") || !strings.Contains(pesan, "Informatika") {
+		t.Errorf("filter prodi Informatika salah:\n%s", pesan)
+	}
+	pesan = tanganiTercepat("prodi Teknik Elektro")
+	if !strings.Contains(pesan, "Tidak ada mahasiswa cocok") {
+		t.Errorf("filter prodi Teknik Elektro harus kosong:\n%s", pesan)
+	}
 }
 
 func TestParseFilterTercepat(t *testing.T) {
@@ -189,6 +207,7 @@ func TestParseFilterTercepat(t *testing.T) {
 		tahun    string
 		nim      string
 		nama     string
+		prodi    string
 		dosen    string
 		judul    string
 		halaman  int
@@ -196,6 +215,7 @@ func TestParseFilterTercepat(t *testing.T) {
 	}{
 		{arg: "angkatan 2022 dosen Fahrul Agus tahun 2026 2", angkatan: "2022", dosen: "Fahrul Agus", tahun: "2026", halaman: 2, batas: 10},
 		{arg: "nim 2209 judul performansi", nim: "2209", judul: "performansi", halaman: 1, batas: 10},
+		{arg: "prodi Teknik Elektro angkatan 2022", prodi: "Teknik Elektro", angkatan: "2022", halaman: 1, batas: 10},
 		{arg: "budi 3", nama: "budi", halaman: 3, batas: 10},
 		{arg: "semua", halaman: 1, batas: 25},
 		{arg: "top 5", halaman: 1, batas: 5},
@@ -204,9 +224,51 @@ func TestParseFilterTercepat(t *testing.T) {
 	for _, c := range cases {
 		f := parseFilterTercepat(c.arg)
 		if f.Angkatan != c.angkatan || f.Tahun != c.tahun || f.NIM != c.nim || f.Nama != c.nama ||
-			f.Dosen != c.dosen || f.Judul != c.judul || f.Halaman != c.halaman || f.Batas != c.batas {
+			f.Prodi != c.prodi || f.Dosen != c.dosen || f.Judul != c.judul || f.Halaman != c.halaman || f.Batas != c.batas {
 			t.Errorf("parseFilterTercepat(%q) = %+v", c.arg, f)
 		}
+	}
+}
+
+func TestEnrichProdi(t *testing.T) {
+	resetCacheProdi()
+	hasil := []kecepatanItem{
+		{Nama: "Andi", Token: "tokA", Hari: 10, Peringkat: 1},
+		{Nama: "Budi", Token: "tokB", Hari: 20, Peringkat: 2},
+		{Nama: "Siti", Token: "tokC", Hari: 30, Peringkat: 3},
+		{Nama: "Dedi", Token: "tokD", Hari: 40, Peringkat: 4},
+	}
+	data := map[string]struct{ nim, prodi string }{
+		"tokA": {"2209076009", "Teknik Elektro"},
+		"tokB": {"2209076036", "Teknik Elektro"},
+		"tokC": {"2209066035", "Teknik Kimia"},
+		"tokD": {"2209106125", "Informatika"},
+	}
+	panggilan := 0
+	ambil := func(token string) (string, string, error) {
+		panggilan++
+		v := data[token]
+		return v.nim, v.prodi, nil
+	}
+
+	out := enrichProdi(hasil, "Teknik Elektro", ambil, 10)
+	if len(out) != 2 || out[0].Nama != "Andi" || out[1].Nama != "Budi" {
+		t.Fatalf("filter Teknik Elektro = %+v", out)
+	}
+	if out[0].Peringkat != 1 || out[1].Peringkat != 2 {
+		t.Errorf("peringkat tidak disusun ulang: %+v", out)
+	}
+	if panggilan != 4 {
+		t.Errorf("jumlah lookup pertama = %d, mau 4", panggilan)
+	}
+
+	panggilan = 0
+	out = enrichProdi(hasil, "Teknik Kimia", ambil, 10)
+	if len(out) != 1 || out[0].Nama != "Siti" {
+		t.Errorf("filter Teknik Kimia (cache) = %+v", out)
+	}
+	if panggilan != 0 {
+		t.Errorf("lookup kedua = %d, mau 0 (cache)", panggilan)
 	}
 }
 
