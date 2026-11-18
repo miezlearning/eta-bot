@@ -323,7 +323,7 @@ wa-bot/
 └── .env.example    # Template konfigurasi (E_TA_API_BASE, WA_DB, WA_PAIR_PHONE, ...)
 ```
 
-### Command bot WhatsApp (paritas penuh dengan bot Telegram)
+### Command bot WhatsApp (sama seperti bot Telegram, ditambah `/tercepat`)
 
 | Perintah | Hasil |
 |----------|-------|
@@ -332,6 +332,7 @@ wa-bot/
 | `/detail <NIM/token>` | Rincian ruang, kapasitas, SK penilai sidang, & daftar peserta/audiens hadir |
 | `/eroom [ruang/nama] [hal]` | Cari jadwal seminar e-room se-Fakultas Teknik (3.300+ agenda) + pagination halaman |
 | `/statistik [periode] [hal]` | Statistik berapa orang sempro, semhas, & pendadaran (se-FT) + pagination daftar sidang |
+| `/tercepat [filter] [hal]` | Peringkat tercepat Sempro → Pendadaran + pencarian orang: filter angkatan, nama, NIM, dosen, judul, ruang, tahun |
 | `/jadwal` | Jadwal sidang hari ini |
 | `/jadwal besok` / `lusa` / `kemarin` | Jadwal tanggal relatif |
 | `/jadwal kamis` (dst.) | Jadwal hari tersebut di pekan mendatang |
@@ -339,6 +340,31 @@ wa-bot/
 | `/jadwal semua [hal]` | Ringkasan total + jadwal mendatang ber-halaman (misal `/jadwal semua 2`) |
 | `/status` | Status koneksi API e-TA |
 | `/help` | Menu bantuan perintah |
+
+Catatan `/tercepat`: memakai seluruh agenda e-room se-FT yang digabung dengan
+`/api/judul-skripsi` (NIM, judul, dosen). Hanya mahasiswa dengan jadwal
+**Seminar Proposal** dan **Pendadaran** yang dihitung, dengan tanggal pendadaran
+sudah berlalu (≤ hari ini). Durasi = selisih dari sempro tercepat ke pendadaran
+pertama. Pengelompokan memakai nama e-room yang dinormalisasi; angkatan diturunkan
+dari 2 digit awal NIM.
+
+Filter bisa digabung, diikuti nomor halaman di akhir:
+
+| Filter | Contoh | Keterangan |
+|--------|--------|------------|
+| Angkatan | `/tercepat angkatan 2022` | Dari NIM; `22` juga diterima |
+| Tahun pendadaran | `/tercepat tahun 2026` | Angka 4 digit saja juga diterima |
+| Nama | `/tercepat nama budi` | Bisa langsung `/tercepat budi` |
+| NIM | `/tercepat nim 2209` | Substring NIM |
+| Dosen | `/tercepat dosen Fahrul Agus` | Pembimbing/penguji dari data judul |
+| Judul | `/tercepat judul performansi` | Kata kunci judul skripsi |
+| Ruang | `/tercepat ruang D209` | Ruang pendadaran di e-room |
+| Jumlah | `/tercepat semua`, `/tercepat top 5` | Bawaan 10, `semua` = 25 |
+| Halaman | `/tercepat angkatan 2022 2` | Nomor di akhir |
+
+Contoh gabungan: `/tercepat angkatan 2022 dosen Fahrul tahun 2026 2`.
+Filter **prodi** belum tersedia di data e-room/judul secara massal; gunakan
+`/mhs <nama>` untuk melihat prodi satu mahasiswa.
 
 ### Cara jalan (lokal — butuh proses persisten)
 

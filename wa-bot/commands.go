@@ -68,6 +68,8 @@ func handleIncoming(chat types.JID, text string) {
 		reply = tanganiMahasiswa(argumen)
 	case "statistik", "stats":
 		reply = tanganiStatistik(argumen)
+	case "tercepat", "cepat", "leaderboard":
+		reply = tanganiTercepat(argumen)
 	case "detail":
 		reply = tanganiDetail(argumen)
 	case "eroom":
@@ -109,6 +111,11 @@ func teksBantuan() string {
 		"Statistik Sidang:",
 		"/statistik -- statistik sempro, semhas, & pdd bulan ini",
 		"/statistik <bulan/tahun> -- contoh: /statistik november, /statistik 2026-06, /statistik 2026",
+		"/tercepat -- peringkat tercepat sempro → pendadaran (se-FT)",
+		"/tercepat angkatan 2022 -- filter angkatan (dari NIM)",
+		"/tercepat nama <nama> / nim <NIM> -- cari orang tertentu",
+		"/tercepat dosen <nama> / judul <kata> / ruang <kode> -- filter lanjutan",
+		"/tercepat tahun 2026 -- pendadaran tahun 2026; tambahkan angka di akhir untuk halaman",
 		"",
 		"Jadwal Sidang:",
 		"/jadwal -- jadwal sidang hari ini",
@@ -953,6 +960,471 @@ func tanganiEroom(arg string) string {
 			qParam += " "
 		}
 		sb.WriteString("\nKetik: /eroom " + qParam + strconv.Itoa(nextPage) + " untuk halaman berikutnya.")
+	}
+	return sb.String()
+}
+
+// kecepatanItem menyimpan durasi sempro -> pendadaran satu mahasiswa.
+type kecepatanItem struct {
+	Nama       string
+	NIM        string
+	Angkatan   string
+	Judul      string
+	Dosen      string
+	Ruang      string
+	Sempro     string // YYYY-MM-DD
+	Pendadaran string // YYYY-MM-DD
+	Hari       int
+	Peringkat  int
+}
+
+// filterTercepat merangkum filter pencarian command /tercepat.
+type filterTercepat struct {
+	Tahun    string
+	Angkatan string
+	NIM      string
+	Nama     string
+	Dosen    string
+	Judul    string
+	Ruang    string
+	Batas    int
+	Halaman  int
+}
+
+// agregatKecepatan mengumpulkan tanggal terjadwal per mahasiswa.
+type agregatKecepatan struct {
+	nama   string
+	sempro string
+	pdd    string
+	ruang  string
+}
+
+// normalisasiNama dipakai sebagai kunci pengelompokan antar event e-room.
+func normalisasiNama(s string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(s))), " ")
+}
+
+// kunciFilterTercepat adalah kata kunci yang harus diikuti nilai.
+var kunciFilterTercepat = map[string]bool{
+	"angkatan": true, "tahun": true, "nim": true, "nama": true,
+	"dosen": true, "judul": true, "ruang": true, "top": true,
+}
+
+// angkatanDariNIM mengubah dua digit awal NIM menjadi tahun angkatan.
+func angkatanDariNIM(nim string) string {
+	if len(nim) < 2 {
+		return ""
+	}
+	for _, r := range nim[:2] {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return "20" + nim[:2]
+}
+
+// normAngkatan menerima "22" maupun "2022" dan mengembalikan "2022".
+func normAngkatan(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) == 2 && s[0] >= '0' && s[0] <= '9' && s[1] >= '0' && s[1] <= '9' {
+		return "20" + s
+	}
+	return s
+}
+
+// parseFilterTercepat membaca argumen bentuk:
+//
+//	/tercepat angkatan 2022 dosen Fahrul tahun 2026 [halaman]
+//	/tercepat nim 2209 judul performansi
+//	/tercepat budi 2
+func parseFilterTercepat(arg string) filterTercepat {
+	f := filterTercepat{Batas: 10, Halaman: 1}
+	fields := strings.Fields(strings.TrimSpace(arg))
+
+	if len(fields) > 0 {
+		last := fields[len(fields)-1]
+		if n, err := strconv.Atoi(last); err == nil && n >= 1 && len(last) <= 3 &&
+			(len(fields) == 1 || !kunciFilterTercepat[strings.ToLower(fields[len(fields)-2])]) {
+			f.Halaman = n
+			fields = fields[:len(fields)-1]
+		}
+	}
+
+	sisa := make([]string, 0, len(fields))
+	for _, v := range fields {
+		l := strings.ToLower(v)
+		if l == "semua" || l == "all" {
+			f.Batas = 25
+			continue
+		}
+		sisa = append(sisa, v)
+	}
+	fields = sisa
+
+	for i := 0; i < len(fields); {
+		key := strings.ToLower(fields[i])
+		mentah := fields[i]
+		i++
+		if !kunciFilterTercepat[key] {
+			if len(key) == 4 && key[0] >= '0' && key[0] <= '9' {
+				if n, err := strconv.Atoi(key); err == nil && n >= 1900 && n <= 2100 {
+					f.Tahun = key
+					continue
+				}
+			}
+			if len(key) >= 8 {
+				if _, err := strconv.Atoi(key); err == nil {
+					f.NIM = key
+					continue
+				}
+			}
+			bag := []string{mentah}
+			for i < len(fields) && !kunciFilterTercepat[strings.ToLower(fields[i])] {
+				bag = append(bag, fields[i])
+				i++
+			}
+			f.Nama = strings.Join(bag, " ")
+			continue
+		}
+		if key == "top" {
+			if i < len(fields) {
+				if n, err := strconv.Atoi(fields[i]); err == nil && n > 0 {
+					if n > 50 {
+						n = 50
+					}
+					f.Batas = n
+					i++
+				}
+			}
+			continue
+		}
+		bag := []string{}
+		for i < len(fields) && !kunciFilterTercepat[strings.ToLower(fields[i])] {
+			bag = append(bag, fields[i])
+			i++
+		}
+		nilai := strings.Join(bag, " ")
+		switch key {
+		case "angkatan":
+			f.Angkatan = normAngkatan(nilai)
+		case "tahun":
+			f.Tahun = nilai
+		case "nim":
+			f.NIM = nilai
+		case "nama":
+			f.Nama = nilai
+		case "dosen":
+			f.Dosen = nilai
+		case "judul":
+			f.Judul = nilai
+		case "ruang":
+			f.Ruang = nilai
+		}
+	}
+	return f
+}
+
+// label menampilkan filter aktif untuk header pesan.
+func (f filterTercepat) label() string {
+	parts := []string{}
+	if f.Tahun != "" {
+		parts = append(parts, "tahun "+f.Tahun)
+	}
+	if f.Angkatan != "" {
+		parts = append(parts, "angkatan "+f.Angkatan)
+	}
+	if f.NIM != "" {
+		parts = append(parts, "NIM "+f.NIM)
+	}
+	if f.Nama != "" {
+		parts = append(parts, "nama '"+f.Nama+"'")
+	}
+	if f.Dosen != "" {
+		parts = append(parts, "dosen '"+f.Dosen+"'")
+	}
+	if f.Judul != "" {
+		parts = append(parts, "judul '"+f.Judul+"'")
+	}
+	if f.Ruang != "" {
+		parts = append(parts, "ruang '"+f.Ruang+"'")
+	}
+	if len(parts) == 0 {
+		return "tanpa filter"
+	}
+	return strings.Join(parts, " | ")
+}
+
+// keArg menyusun ulang argumen untuk petunjuk halaman berikutnya.
+func (f filterTercepat) keArg() string {
+	parts := []string{}
+	if f.Tahun != "" {
+		parts = append(parts, "tahun", f.Tahun)
+	}
+	if f.Angkatan != "" {
+		parts = append(parts, "angkatan", f.Angkatan)
+	}
+	if f.NIM != "" {
+		parts = append(parts, "nim", f.NIM)
+	}
+	if f.Nama != "" {
+		parts = append(parts, "nama", f.Nama)
+	}
+	if f.Dosen != "" {
+		parts = append(parts, "dosen", f.Dosen)
+	}
+	if f.Judul != "" {
+		parts = append(parts, "judul", f.Judul)
+	}
+	if f.Ruang != "" {
+		parts = append(parts, "ruang", f.Ruang)
+	}
+	if f.Batas == 25 {
+		parts = append(parts, "semua")
+	} else if f.Batas != 10 {
+		parts = append(parts, "top", strconv.Itoa(f.Batas))
+	}
+	return strings.Join(parts, " ")
+}
+
+// cocokFilterTercepat mengecek filter selain tahun (sudah saat agregasi).
+func cocokFilterTercepat(h kecepatanItem, f filterTercepat) bool {
+	if f.Angkatan != "" && h.Angkatan != f.Angkatan {
+		return false
+	}
+	if f.NIM != "" && !strings.Contains(h.NIM, f.NIM) {
+		return false
+	}
+	if f.Nama != "" && !strings.Contains(normalisasiNama(h.Nama), normalisasiNama(f.Nama)) {
+		return false
+	}
+	if f.Dosen != "" && !strings.Contains(normalisasiNama(h.Dosen), normalisasiNama(f.Dosen)) {
+		return false
+	}
+	if f.Judul != "" && !strings.Contains(normalisasiNama(h.Judul), normalisasiNama(f.Judul)) {
+		return false
+	}
+	if f.Ruang != "" && !strings.Contains(normalisasiNama(h.Ruang), normalisasiNama(f.Ruang)) {
+		return false
+	}
+	return true
+}
+
+// hitungTercepat menyusun peringkat mahasiswa berdasarkan durasi tercepat
+// dari Seminar Proposal ke Pendadaran. Data judul skripsi dipakai untuk
+// melengkapi NIM/angkatan/dosen dan menyaring hasil.
+func hitungTercepat(jadwal []eroomItem, daftarJudul []judulItem, f filterTercepat, hariIni time.Time) []kecepatanItem {
+	judulMap := make(map[string]judulItem, len(daftarJudul))
+	for _, item := range daftarJudul {
+		key := normalisasiNama(item.Nama)
+		if key == "" {
+			continue
+		}
+		if _, ada := judulMap[key]; !ada {
+			judulMap[key] = item
+		}
+	}
+
+	agregat := make(map[string]*agregatKecepatan)
+	hariIniStr := hariIni.Format("2006-01-02")
+
+	for _, j := range jadwal {
+		isSempro := j.Jenis == "Seminar Proposal"
+		isPdd := j.Jenis == "Pendadaran"
+		if !isSempro && !isPdd {
+			continue
+		}
+		if len(j.Tanggal) < 10 {
+			continue
+		}
+		tgl := j.Tanggal[:10]
+		if _, err := time.Parse("2006-01-02", tgl); err != nil {
+			continue
+		}
+		if isPdd {
+			if f.Tahun != "" && !strings.HasPrefix(tgl, f.Tahun+"-") {
+				continue
+			}
+			if tgl > hariIniStr {
+				continue
+			}
+		}
+
+		nama := strings.TrimSpace(j.Nama)
+		if nama == "" {
+			nama = strings.TrimSpace(strings.Split(j.Title, " - ")[0])
+		}
+		key := normalisasiNama(nama)
+		if key == "" || key == "tes" {
+			continue
+		}
+
+		a, ada := agregat[key]
+		if !ada {
+			a = &agregatKecepatan{nama: nama}
+			agregat[key] = a
+		}
+		if isSempro {
+			if a.sempro == "" || tgl < a.sempro {
+				a.sempro = tgl
+				a.nama = nama
+			}
+		} else if a.pdd == "" || tgl < a.pdd {
+			a.pdd = tgl
+			a.ruang = strings.TrimSpace(j.Ruang)
+		}
+	}
+
+	hasil := make([]kecepatanItem, 0, len(agregat))
+	for _, a := range agregat {
+		if a.sempro == "" || a.pdd == "" || a.pdd < a.sempro {
+			continue
+		}
+		t1, err1 := time.Parse("2006-01-02", a.sempro)
+		t2, err2 := time.Parse("2006-01-02", a.pdd)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		hari := int(t2.Sub(t1).Hours() / 24)
+		if hari < 0 || hari > 3650 {
+			continue
+		}
+
+		h := kecepatanItem{
+			Nama:       a.nama,
+			Ruang:      a.ruang,
+			Sempro:     a.sempro,
+			Pendadaran: a.pdd,
+			Hari:       hari,
+		}
+		if item, ada := judulMap[normalisasiNama(a.nama)]; ada {
+			h.NIM = item.NIM
+			h.Angkatan = angkatanDariNIM(item.NIM)
+			h.Judul = item.Judul
+			namaDosen := []string{}
+			for _, d := range item.Dosen {
+				namaD := strings.TrimSpace(d.Nama)
+				if namaD != "" {
+					namaDosen = append(namaDosen, namaD)
+				}
+			}
+			sort.Strings(namaDosen)
+			h.Dosen = strings.Join(namaDosen, ", ")
+		}
+		if !cocokFilterTercepat(h, f) {
+			continue
+		}
+		hasil = append(hasil, h)
+	}
+
+	sort.Slice(hasil, func(i, j int) bool {
+		if hasil[i].Hari != hasil[j].Hari {
+			return hasil[i].Hari < hasil[j].Hari
+		}
+		return normalisasiNama(hasil[i].Nama) < normalisasiNama(hasil[j].Nama)
+	})
+	for i := range hasil {
+		hasil[i].Peringkat = i + 1
+	}
+	return hasil
+}
+
+// formatDurasi menampilkan jumlah hari plus perkiraan bulan.
+func formatDurasi(hari int) string {
+	s := strconv.Itoa(hari) + " hari"
+	if hari >= 30 {
+		bulan := strconv.FormatFloat(float64(hari)/30.0, 'f', 1, 64)
+		bulan = strings.TrimRight(strings.TrimRight(bulan, "0"), ".")
+		s += " (≈" + strings.ReplaceAll(bulan, ".", ",") + " bulan)"
+	}
+	return s
+}
+
+// formatTglPendek mengubah YYYY-MM-DD menjadi DD/MM/YYYY.
+func formatTglPendek(tgl string) string {
+	if len(tgl) < 10 {
+		return tgl
+	}
+	return tgl[8:10] + "/" + tgl[5:7] + "/" + tgl[:4]
+}
+
+// tanganiTercepat menampilkan peringkat sekaligus berguna untuk mencari orang.
+func tanganiTercepat(arg string) string {
+	f := parseFilterTercepat(arg)
+	if !eta.TryAcquire() {
+		return "Bot sedang memproses permintaan lain, coba lagi beberapa detik."
+	}
+	defer eta.Release()
+
+	res, err := eta.FetchEroomSemua()
+	if err != nil {
+		return "Gagal mengambil jadwal e-room: " + err.Error()
+	}
+	if res == nil || len(res.Jadwal) == 0 {
+		return "Data jadwal e-room belum tersedia."
+	}
+
+	daftarJudul, _, err := eta.FetchJudul("")
+	if err != nil {
+		if f.Angkatan != "" || f.NIM != "" || f.Dosen != "" || f.Judul != "" {
+			return "Gagal mengambil data judul skripsi: " + err.Error()
+		}
+		daftarJudul = nil
+	}
+
+	hasil := hitungTercepat(res.Jadwal, daftarJudul, f, time.Now())
+	if len(hasil) == 0 {
+		return "Tidak ada mahasiswa cocok dengan filter: " + f.label() + "."
+	}
+	total := len(hasil)
+	if total > f.Batas {
+		hasil = hasil[:f.Batas]
+	}
+
+	const pageSize = 8
+	totalPages := (len(hasil) + pageSize - 1) / pageSize
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	page := f.Halaman
+	if page < 1 {
+		page = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	start := (page - 1) * pageSize
+	end := start + pageSize
+	if end > len(hasil) {
+		end = len(hasil)
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Peringkat Tercepat Sempro → Pendadaran\n")
+	sb.WriteString("Sumber: e-room se-FT · pendadaran sudah berlalu\n")
+	sb.WriteString("Filter: " + f.label() + "\n")
+	sb.WriteString("Mahasiswa cocok: " + strconv.Itoa(total) + " (ditampilkan maks. " + strconv.Itoa(f.Batas) + ")\n\n")
+	for _, h := range hasil[start:end] {
+		sb.WriteString(strconv.Itoa(h.Peringkat) + ". " + h.Nama + " -- " + formatDurasi(h.Hari) + "\n")
+		identitas := ""
+		if h.Angkatan != "" {
+			identitas += h.Angkatan + " · "
+		}
+		if h.NIM != "" {
+			identitas += h.NIM + " · "
+		}
+		sb.WriteString("   " + identitas + formatTglPendek(h.Sempro) + " → " + formatTglPendek(h.Pendadaran) + "\n")
+	}
+	sb.WriteString("\nDurasi dihitung dari Sempro tercepat ke Pendadaran pertama.")
+	if totalPages > 1 {
+		nextPage := page + 1
+		if nextPage > totalPages {
+			nextPage = 1
+		}
+		argLanjutan := f.keArg()
+		if argLanjutan != "" {
+			argLanjutan += " "
+		}
+		sb.WriteString("\nKetik: /tercepat " + argLanjutan + strconv.Itoa(nextPage) + " untuk halaman berikutnya.")
 	}
 	return sb.String()
 }

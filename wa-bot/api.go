@@ -308,6 +308,15 @@ func (a *EtaAPI) FetchEroomJadwal(query string) (*eroomResponse, error) {
 	return &out, nil
 }
 
+// FetchEroomSemua mengambil seluruh agenda e-room se-Fakultas Teknik (tanpa filter).
+func (a *EtaAPI) FetchEroomSemua() (*eroomResponse, error) {
+	var out eroomResponse
+	if err := a.fetchJSON("/api/eroom/jadwal", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // FetchHealth mengambil status API e-TA.
 func (a *EtaAPI) FetchHealth() (*healthResponse, error) {
 	var out healthResponse
