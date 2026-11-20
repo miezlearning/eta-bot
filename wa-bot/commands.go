@@ -97,10 +97,9 @@ func kirimBalasan(chat types.JID, teks string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, err := waClient.SendMessage(ctx, chat, &waE2E.Message{
+	if _, err := kirimPesanWA(ctx, chat, &waE2E.Message{
 		Conversation: proto.String(teks),
-	})
-	if err != nil {
+	}); err != nil {
 		logger.Errorf("gagal kirim balasan: %v", err)
 	}
 }

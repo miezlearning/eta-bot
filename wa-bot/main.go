@@ -26,6 +26,7 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store/sqlstore"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	_ "modernc.org/sqlite"
@@ -93,6 +94,19 @@ func isAllowedChat(jid string) bool {
 	return false
 }
 
+// chatDiizinkan memeriksa apakah chat (atau alias PN/LID-nya) ada di WA_ALLOWED_CHATS.
+func chatDiizinkan(info types.MessageInfo) bool {
+	if allowedChats == "" {
+		return true
+	}
+	for _, kandidat := range kandidatJIDChat(info) {
+		if isAllowedChat(kandidat) {
+			return true
+		}
+	}
+	return false
+}
+
 // teksPesan mengambil teks dari pesan (chat biasa maupun extended).
 func teksPesan(m *waE2E.Message) string {
 	if m == nil {
@@ -111,21 +125,28 @@ func eventHandler(v interface{}) {
 		logger.Infof("terhubung ke WhatsApp")
 	case *events.Disconnected:
 		logger.Warnf("koneksi WhatsApp terputus")
+	case *events.UndecryptableMessage:
+		if evt.UnavailableType != events.UnavailableTypeViewOnce || !chatDiizinkan(evt.Info) {
+			return
+		}
+		logger.Warnf("view once %s dari %s ditahan WhatsApp (unavailable: view_once)", evt.Info.ID, evt.Info.SourceString())
+		catatViewOnceTertahan(evt)
 	case *events.Message:
-		chat := evt.Info.Chat
-		if evt.Info.IsFromMe || !isAllowedChat(chat.String()) {
+		if adalahPesanBot(evt.Info.ID) || !chatDiizinkan(evt.Info) {
 			return
 		}
-		if evt.IsViewOnce {
-			go catatViewOnce(evt)
+		chatKey := kunciChatInfo(evt.Info)
+		inner, isVO := bukaPembungkus(evt.Message, evt.IsViewOnce)
+		if isVO {
+			catatViewOnce(chatKey, evt, inner)
 			return
 		}
-		catatPesan(evt)
-		text := teksPesan(evt.Message)
+		catatPesanDenganKunci(chatKey, evt, inner)
+		text := teksPesan(inner)
 		if text == "" {
 			return
 		}
-		go handleIncoming(chat, text)
+		go handleIncoming(evt.Info.Chat.ToNonAD(), text)
 	}
 }
 
