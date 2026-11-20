@@ -112,15 +112,20 @@ func eventHandler(v interface{}) {
 	case *events.Disconnected:
 		logger.Warnf("koneksi WhatsApp terputus")
 	case *events.Message:
+		chat := evt.Info.Chat
+		if evt.Info.IsFromMe || !isAllowedChat(chat.String()) {
+			return
+		}
+		if evt.IsViewOnce {
+			go catatViewOnce(evt)
+			return
+		}
+		catatPesan(evt)
 		text := teksPesan(evt.Message)
 		if text == "" {
 			return
 		}
-		chat := evt.Info.Chat.String()
-		if evt.Info.IsFromMe || !isAllowedChat(chat) {
-			return
-		}
-		go handleIncoming(evt.Info.Chat, text)
+		go handleIncoming(chat, text)
 	}
 }
 

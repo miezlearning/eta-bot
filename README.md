@@ -334,6 +334,9 @@ wa-bot/
 | `/statistik [periode] [hal]` | Statistik berapa orang sempro, semhas, & pendadaran (se-FT) + pagination daftar sidang |
 | `/tercepat [filter] [hal]` | Peringkat tercepat Sempro → Pendadaran + pencarian orang: filter angkatan, nama, NIM, prodi, dosen, judul, ruang, tahun |
 | `/terlambat [filter] [hal]` | Kebalikan `/tercepat`: durasi Sempro → Pendadaran paling lama (filter sama) |
+| `/vo [n]` | Kirim ulang media **sekali lihat** (view once) ke-n terakhir di chat itu; tanpa teks tambahan |
+| `/hapus` | Daftar pesan yang baru dihapus selama bot online (maks. 12 jam terakhir) |
+| `/hapus <n>` | Buka isi pesan terhapus nomor n (teks atau media aslinya) |
 | `/jadwal` | Jadwal sidang hari ini |
 | `/jadwal besok` / `lusa` / `kemarin` | Jadwal tanggal relatif |
 | `/jadwal kamis` (dst.) | Jadwal hari tersebut di pekan mendatang |
@@ -369,6 +372,13 @@ Contoh gabungan: `/tercepat angkatan 2022 dosen Fahrul tahun 2026 2`.
 Tampilan memakai markdown WhatsApp (`*tebal*`, `_miring_`, `` `kode` ``) dengan
 satu baris per mahasiswa agar 10 entri muat dalam satu pesan. `/terlambat`
 menerima filter yang sama dan mengurutkan durasi dari yang paling lama.
+
+Catatan `/vo` dan `/hapus`: keduanya memakai arsip **in-memory** yang hanya
+terisi selama bot WhatsApp online. Media sekali lihat langsung diunduh saat
+diterima (maks. 20 MB, 10 item per chat), sedangkan pesan biasa disimpan
+sementara (20 item per chat) agar isinya bisa ditampilkan bila di-revoke. `/vo`
+mengirim media tanpa teks pengantar; `/hapus` menampilkan daftar, lalu
+`/hapus <nomor>` mengirim ulang isi aslinya. Restart bot mengosongkan arsip.
 
 Catatan filter prodi: daftar e-room tidak memuat prodi, jadi prodi diambil dari
 halaman **detail e-room** (`/api/eroom/sidang/:token`, field `peserta.prodi`).

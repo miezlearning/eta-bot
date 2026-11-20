@@ -73,6 +73,11 @@ func handleIncoming(chat types.JID, text string) {
 		reply = tanganiTercepat(argumen)
 	case "terlambat", "lambat", "pelan":
 		reply = tanganiTerlambat(argumen)
+	case "vo", "viewonce", "sekali", "sekali-lihat":
+		tanganiVO(chat, argumen)
+		return
+	case "hapus", "deleted", "apus":
+		reply = tanganiHapus(chat, argumen)
 	case "detail":
 		reply = tanganiDetail(argumen)
 	case "eroom":
@@ -132,6 +137,10 @@ func teksBantuan() string {
 		"/jadwal semua -- ringkasan total + 5 jadwal berikutnya",
 		"",
 		"Lainnya:",
+		"/vo -- kirim ulang pesan sekali lihat terakhir (tanpa teks)",
+		"/vo 2 -- pesan sekali lihat kedua terakhir",
+		"/hapus -- daftar pesan yang baru dihapus selama bot online",
+		"/hapus 1 -- buka isi pesan terhapus nomor 1",
 		"/status -- status koneksi API e-TA",
 		"/help -- menu bantuan ini",
 	}, "\n")
