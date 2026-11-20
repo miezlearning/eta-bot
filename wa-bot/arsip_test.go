@@ -283,3 +283,76 @@ func TestArsipEditSebelumHapusDanPesanBot(t *testing.T) {
 		t.Error("pelacakan ID pesan bot tidak akurat")
 	}
 }
+
+func TestQuoteViewOnceDanRescueHapus(t *testing.T) {
+	resetArsip()
+	chatPN := types.NewJID("628777", types.DefaultUserServer)
+	chatLID := types.NewJID("55443322", types.HiddenUserServer)
+
+	// 1. Quote pada /vo mengekstrak stanzaID dan QuotedMessage, serta pathDariURL bekerja.
+	if got := pathDariURL("https://mmg.whatsapp.net/v/t62.7118-24/abc?ccb=11-4"); got != "/v/t62.7118-24/abc?ccb=11-4" {
+		t.Errorf("pathDariURL = %q", got)
+	}
+	replyVO := &waE2E.Message{
+		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text: proto.String("/vo"),
+			ContextInfo: &waE2E.ContextInfo{
+				StanzaID: proto.String("VO-QUOTED"),
+				QuotedMessage: &waE2E.Message{
+					ImageMessage: &waE2E.ImageMessage{
+						Mimetype: proto.String("image/jpeg"),
+						URL:      proto.String("https://mmg.whatsapp.net/v/t62.7118-24/abc"),
+					},
+				},
+			},
+		},
+	}
+	qm, sid, _ := ambilQuoted(replyVO)
+	if qm == nil || sid != "VO-QUOTED" || qm.GetImageMessage() == nil {
+		t.Fatalf("ambilQuoted gagal membaca reply /vo: qm=%v sid=%q", qm, sid)
+	}
+	simpanVO(chatPN.String(), arsipPesan{
+		ID:    "VO-QUOTED",
+		Media: &arsipMedia{Jenis: "image", Data: []byte{9, 8, 7}},
+	})
+	if p, ok := cariVOByID(chatPN.String(), "VO-QUOTED"); !ok || len(p.Media.Data) != 3 {
+		t.Fatalf("cariVOByID gagal: %+v", p)
+	}
+
+	// 2. Pesan lama yang tidak pernah terlihat bot ikut terselamatkan lewat quote saat di-revoke.
+	catatPesan(&events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{Chat: chatPN},
+			ID:            "REPLY-1",
+			PushName:      "Hana",
+		},
+		Message: &waE2E.Message{
+			ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+				Text: proto.String("bales pesan lama"),
+				ContextInfo: &waE2E.ContextInfo{
+					StanzaID:      proto.String("ORPHAN-1"),
+					Participant:   proto.String("628999@s.whatsapp.net"),
+					QuotedMessage: &waE2E.Message{Conversation: proto.String("pesan sebelum bot online")},
+				},
+			},
+		},
+	})
+	// Revoke datang lewat LID tanpa SenderAlt -> fallback DM tetap menemukan orphan quote.
+	catatPesan(&events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{Chat: chatLID},
+			ID:            "REV-ORPHAN",
+		},
+		Message: &waE2E.Message{
+			ProtocolMessage: &waE2E.ProtocolMessage{
+				Type: waE2E.ProtocolMessage_REVOKE.Enum(),
+				Key:  &waCommon.MessageKey{ID: proto.String("ORPHAN-1")},
+			},
+		},
+	})
+
+	daftar := daftarHapus(chatLID.String())
+	if len(daftar) != 1 || daftar[0].Teks != "pesan sebelum bot online" {
+		t.Fatalf("orphan quote rescue atau fallback LID DM gagal: %+v", daftar)
+	}
+}

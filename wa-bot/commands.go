@@ -36,6 +36,10 @@ var hariKe = map[string]int{
 
 // handleIncoming menangani satu pesan masuk lalu membalas bila cocok command.
 func handleIncoming(chat types.JID, text string) {
+	handleIncomingPesan(chat, text, nil)
+}
+
+func handleIncomingPesan(chat types.JID, text string, pesan *waE2E.Message) {
 	lower := strings.ToLower(text)
 	if !strings.HasPrefix(lower, "/") && !strings.HasPrefix(lower, "!") {
 		return
@@ -73,8 +77,8 @@ func handleIncoming(chat types.JID, text string) {
 		reply = tanganiTercepat(argumen)
 	case "terlambat", "lambat", "pelan":
 		reply = tanganiTerlambat(argumen)
-	case "vo", "viewonce", "sekali", "sekali-lihat":
-		tanganiVO(chat, argumen)
+	case "vo", "viewonce", "sekali", "sekali-lihat", "reveal", "r":
+		tanganiVODenganPesan(chat, argumen, pesan)
 		return
 	case "hapus", "deleted", "apus":
 		reply = tanganiHapus(chat, argumen)
@@ -136,7 +140,7 @@ func teksBantuan() string {
 		"/jadwal semua -- ringkasan total + 5 jadwal berikutnya",
 		"",
 		"Lainnya:",
-		"/vo -- kirim ulang pesan sekali lihat terakhir (tanpa teks)",
+		"/vo -- kirim ulang pesan sekali lihat terakhir (bisa juga reply pesan sekali lihat)",
 		"/vo 2 -- pesan sekali lihat kedua terakhir",
 		"/hapus -- daftar pesan yang baru dihapus selama bot online",
 		"/hapus 1 -- buka isi pesan terhapus nomor 1",

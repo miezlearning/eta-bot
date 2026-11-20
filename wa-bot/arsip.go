@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,6 +54,8 @@ type arsipChat struct {
 	hapus          []arsipPesan
 	terakhir       map[string]arsipPesan
 	urutanTerakhir []string
+	pendingQuote   map[string]arsipPesan
+	urutanQuote    []string
 }
 
 var arsip = struct {
@@ -124,8 +127,17 @@ func kirimPesanWA(ctx context.Context, chat types.JID, msg *waE2E.Message) (what
 func arsipDari(id string) *arsipChat {
 	c, ok := arsip.chat[id]
 	if !ok {
-		c = &arsipChat{terakhir: map[string]arsipPesan{}}
+		c = &arsipChat{
+			terakhir:     map[string]arsipPesan{},
+			pendingQuote: map[string]arsipPesan{},
+		}
 		arsip.chat[id] = c
+	}
+	if c.terakhir == nil {
+		c.terakhir = map[string]arsipPesan{}
+	}
+	if c.pendingQuote == nil {
+		c.pendingQuote = map[string]arsipPesan{}
 	}
 	return c
 }
@@ -356,6 +368,52 @@ func panjangMedia(m *waE2E.Message) uint64 {
 	return 0
 }
 
+// ambilContextInfo mengekstrak ContextInfo dari pesan teks atau media.
+func ambilContextInfo(m *waE2E.Message) *waE2E.ContextInfo {
+	if m == nil {
+		return nil
+	}
+	switch {
+	case m.GetExtendedTextMessage() != nil:
+		return m.GetExtendedTextMessage().GetContextInfo()
+	case m.GetImageMessage() != nil:
+		return m.GetImageMessage().GetContextInfo()
+	case m.GetVideoMessage() != nil:
+		return m.GetVideoMessage().GetContextInfo()
+	case m.GetAudioMessage() != nil:
+		return m.GetAudioMessage().GetContextInfo()
+	case m.GetDocumentMessage() != nil:
+		return m.GetDocumentMessage().GetContextInfo()
+	case m.GetStickerMessage() != nil:
+		return m.GetStickerMessage().GetContextInfo()
+	}
+	return nil
+}
+
+// ambilQuoted mengambil pesan yang di-reply beserta stanzaID dan pengirim aslinya.
+func ambilQuoted(m *waE2E.Message) (quoted *waE2E.Message, stanzaID, participant string) {
+	ci := ambilContextInfo(m)
+	if ci == nil || ci.GetQuotedMessage() == nil {
+		return nil, "", ""
+	}
+	return ci.GetQuotedMessage(), ci.GetStanzaID(), ci.GetParticipant()
+}
+
+func pathDariURL(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	p := u.RequestURI()
+	if !strings.HasPrefix(p, "/") {
+		return ""
+	}
+	return p
+}
+
 func unduhMedia(m *waE2E.Message) ([]byte, error) {
 	if waClient == nil {
 		return nil, errors.New("klien WhatsApp belum siap")
@@ -364,18 +422,28 @@ func unduhMedia(m *waE2E.Message) ([]byte, error) {
 	if m == nil {
 		return nil, errors.New("bukan media")
 	}
-	var d whatsmeow.DownloadableMessage
+	var (
+		d         whatsmeow.DownloadableMessage
+		rawURL    string
+		mediaType whatsmeow.MediaType
+		mmsType   string
+	)
 	switch {
 	case m.GetImageMessage() != nil:
-		d = m.GetImageMessage()
+		x := m.GetImageMessage()
+		d, rawURL, mediaType, mmsType = x, x.GetURL(), whatsmeow.MediaImage, "image"
 	case m.GetVideoMessage() != nil:
-		d = m.GetVideoMessage()
+		x := m.GetVideoMessage()
+		d, rawURL, mediaType, mmsType = x, x.GetURL(), whatsmeow.MediaVideo, "video"
 	case m.GetAudioMessage() != nil:
-		d = m.GetAudioMessage()
+		x := m.GetAudioMessage()
+		d, rawURL, mediaType, mmsType = x, x.GetURL(), whatsmeow.MediaAudio, "audio"
 	case m.GetDocumentMessage() != nil:
-		d = m.GetDocumentMessage()
+		x := m.GetDocumentMessage()
+		d, rawURL, mediaType, mmsType = x, x.GetURL(), whatsmeow.MediaDocument, "document"
 	case m.GetStickerMessage() != nil:
-		d = m.GetStickerMessage()
+		x := m.GetStickerMessage()
+		d, rawURL, mediaType, mmsType = x, x.GetURL(), whatsmeow.MediaImage, "image"
 	default:
 		return nil, errors.New("bukan media")
 	}
@@ -385,7 +453,16 @@ func unduhMedia(m *waE2E.Message) ([]byte, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	return waClient.Download(ctx, d)
+	if d.GetDirectPath() != "" {
+		return waClient.Download(ctx, d)
+	}
+	if dp := pathDariURL(rawURL); dp != "" {
+		return waClient.DownloadMediaWithPath(
+			ctx, dp, d.GetFileEncSHA256(), d.GetFileSHA256(), d.GetMediaKey(),
+			mediaType, mmsType, false,
+		)
+	}
+	return nil, whatsmeow.ErrNoURLPresent
 }
 
 // lengkapiMediaArsip mengunduh media di latar belakang lalu memperbarui entri arsip yang cocok.
@@ -512,7 +589,53 @@ func catatPesanDenganKunci(chatKey string, evt *events.Message, inner *waE2E.Mes
 	arsip.Lock()
 	c := arsipDari(chatKey)
 	simpanTerakhirLocked(c, p)
+	simpanQuoteCadanganLocked(c, inner)
 	arsip.Unlock()
+}
+
+// simpanQuoteCadanganLocked menyimpan salinan pesan yang di-reply bila pesan aslinya belum ada di cache,
+// sehingga tetap bisa dipulihkan oleh /hapus bila nantinya di-revoke.
+func simpanQuoteCadanganLocked(c *arsipChat, m *waE2E.Message) {
+	quoted, stanzaID, participant := ambilQuoted(m)
+	if quoted == nil || stanzaID == "" {
+		return
+	}
+	if _, ada := c.terakhir[stanzaID]; ada {
+		return
+	}
+	if _, ada := c.pendingQuote[stanzaID]; ada {
+		return
+	}
+	qInner, _ := bukaPembungkus(quoted, false)
+	if qInner == nil {
+		return
+	}
+	pengirim := "pengirim"
+	if participant != "" {
+		if pj, err := types.ParseJID(participant); err == nil && pj.User != "" {
+			pengirim = pj.User
+		}
+	}
+	qp := arsipPesan{
+		ID:       stanzaID,
+		Pengirim: pengirim,
+		Waktu:    time.Now(),
+		Teks:     potongTeks(teksPesan(qInner)),
+		Raw:      qInner,
+	}
+	if am, ok := ekstrakMedia(qInner); ok {
+		qp.Media = am
+	}
+	if qp.Teks == "" && qp.Media == nil {
+		return
+	}
+	c.pendingQuote[stanzaID] = qp
+	c.urutanQuote = append(c.urutanQuote, stanzaID)
+	for len(c.pendingQuote) > arsipMaksCache && len(c.urutanQuote) > 0 {
+		lama := c.urutanQuote[0]
+		c.urutanQuote = c.urutanQuote[1:]
+		delete(c.pendingQuote, lama)
+	}
 }
 
 // catatViewOnce langsung menyimpan metadata view once dan mengunduh medianya di latar belakang.
@@ -599,7 +722,29 @@ func catatHapusAmbil(chat, id string) (arsipPesan, bool) {
 	defer arsip.Unlock()
 	c := arsipDari(chat)
 	p, ada := c.terakhir[id]
-	delete(c.terakhir, id)
+	if ada {
+		delete(c.terakhir, id)
+	} else if pq, ok := c.pendingQuote[id]; ok {
+		p, ada = pq, true
+		delete(c.pendingQuote, id)
+	} else if !strings.HasSuffix(chat, "@"+types.GroupServer) {
+		// Fallback DM lintas @lid / @s.whatsapp.net saat mapping LID-PN belum tercatat.
+		for k, other := range arsip.chat {
+			if k == chat || strings.HasSuffix(k, "@"+types.GroupServer) {
+				continue
+			}
+			if op, ok := other.terakhir[id]; ok {
+				p, ada = op, true
+				delete(other.terakhir, id)
+				break
+			}
+			if op, ok := other.pendingQuote[id]; ok {
+				p, ada = op, true
+				delete(other.pendingQuote, id)
+				break
+			}
+		}
+	}
 	if !ada {
 		return arsipPesan{}, false
 	}
@@ -826,18 +971,82 @@ func simpanDataMediaArsip(chatKey, id string, data []byte) {
 	isi(c.hapus)
 }
 
+func cariVOByID(chat, id string) (*arsipPesan, bool) {
+	if id == "" {
+		return nil, false
+	}
+	arsip.Lock()
+	defer arsip.Unlock()
+	c, ok := arsip.chat[chat]
+	if !ok {
+		return nil, false
+	}
+	for _, item := range c.vo {
+		if item.ID == id {
+			p := salinPesan(item)
+			return &p, true
+		}
+	}
+	return nil, false
+}
+
 // tanganiVO mengirim ulang media sekali lihat tanpa teks tambahan.
 func tanganiVO(chat types.JID, arg string) {
+	tanganiVODenganPesan(chat, arg, nil)
+}
+
+// tanganiVODenganPesan mendukung /vo langsung (berdasarkan reply/quote pesan sekali lihat)
+// maupun /vo [n] dari arsip chat terakhir.
+func tanganiVODenganPesan(chat types.JID, arg string, pesan *waE2E.Message) {
+	chatKey := kunciChatJID(chat)
+
+	if quoted, stanzaID, _ := ambilQuoted(pesan); quoted != nil {
+		if p, ada := cariVOByID(chatKey, stanzaID); ada && ((p.Media != nil && len(p.Media.Data) > 0) || p.Teks != "") {
+			kirimEntriVO(chat, chatKey, p)
+			return
+		}
+		qInner, isQVO := bukaPembungkus(quoted, false)
+		if am, ok := ekstrakMedia(qInner); ok {
+			data, err := unduhMedia(qInner)
+			if err == nil && len(data) > 0 {
+				am.Data = data
+				kirimMedia(chat, am)
+				return
+			}
+			if p, ada := cariVOByID(chatKey, stanzaID); ada {
+				kirimEntriVO(chat, chatKey, p)
+				return
+			}
+			kirimBalasan(chat, "Gagal mengunduh media sekali lihat dari pesan yang dibalas: "+err.Error())
+			return
+		}
+		if p, ada := cariVOByID(chatKey, stanzaID); ada {
+			kirimEntriVO(chat, chatKey, p)
+			return
+		}
+		if isQVO {
+			if qt := teksPesan(qInner); qt != "" {
+				kirimBalasan(chat, qt)
+				return
+			}
+		}
+		kirimBalasan(chat, "Pesan yang dibalas bukan media sekali lihat.")
+		return
+	}
+
 	urutan := 1
 	if n, err := strconv.Atoi(strings.TrimSpace(arg)); err == nil && n > 0 {
 		urutan = n
 	}
-	chatKey := kunciChatJID(chat)
 	p, ok := ambilVO(chatKey, urutan)
 	if !ok {
 		kirimBalasan(chat, "Belum ada pesan sekali lihat.")
 		return
 	}
+	kirimEntriVO(chat, chatKey, p)
+}
+
+func kirimEntriVO(chat types.JID, chatKey string, p *arsipPesan) {
 	if p.Media != nil {
 		if len(p.Media.Data) == 0 && p.Raw != nil && waClient != nil {
 			data, err := unduhMedia(p.Raw)

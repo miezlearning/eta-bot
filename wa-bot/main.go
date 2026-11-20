@@ -146,7 +146,7 @@ func eventHandler(v interface{}) {
 		if text == "" {
 			return
 		}
-		go handleIncoming(evt.Info.Chat.ToNonAD(), text)
+		go handleIncomingPesan(evt.Info.Chat.ToNonAD(), text, inner)
 	}
 }
 
