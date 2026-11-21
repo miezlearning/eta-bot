@@ -43,13 +43,15 @@ type arsipMedia struct {
 }
 
 type arsipPesan struct {
-	ID       string
-	Pengirim string
-	Waktu    time.Time
-	Teks     string
-	Media    *arsipMedia
-	Raw      *waE2E.Message
-	ErrUnduh string
+	ID        string
+	Pengirim  string
+	Waktu     time.Time
+	Teks      string
+	Media     *arsipMedia
+	Raw       *waE2E.Message
+	ErrUnduh  string
+	ChatJID   string
+	SenderJID string
 }
 
 type arsipChat struct {
@@ -78,6 +80,12 @@ var aliasChat = struct {
 	sync.RWMutex
 	lidKePN map[string]string
 }{lidKePN: map[string]string{}}
+
+// permintaanHP membatasi permintaan salinan view-once ke HP utama agar tidak spam.
+var permintaanHP = struct {
+	sync.Mutex
+	terakhir map[string]time.Time
+}{terakhir: map[string]time.Time{}}
 
 func catatAliasChat(lid, pn types.JID) {
 	l := lid.ToNonAD()
@@ -588,11 +596,13 @@ func catatPesanDenganKunci(chatKey string, evt *events.Message, inner *waE2E.Mes
 	}
 
 	p := arsipPesan{
-		ID:       evt.Info.ID,
-		Pengirim: namaPengirimInfo(evt.Info),
-		Waktu:    time.Now(),
-		Teks:     potongTeks(teksPesan(inner)),
-		Raw:      inner,
+		ID:        evt.Info.ID,
+		Pengirim:  namaPengirimInfo(evt.Info),
+		Waktu:     time.Now(),
+		Teks:      potongTeks(teksPesan(inner)),
+		Raw:       inner,
+		ChatJID:   evt.Info.Chat.ToNonAD().String(),
+		SenderJID: evt.Info.Sender.ToNonAD().String(),
 	}
 	if am, ok := ekstrakMedia(inner); ok {
 		p.Media = am
@@ -659,11 +669,13 @@ func catatViewOnce(chatKey string, evt *events.Message, inner *waE2E.Message) {
 		return
 	}
 	p := arsipPesan{
-		ID:       evt.Info.ID,
-		Pengirim: namaPengirimInfo(evt.Info),
-		Waktu:    time.Now(),
-		Teks:     potongTeks(teksPesan(inner)),
-		Raw:      inner,
+		ID:        evt.Info.ID,
+		Pengirim:  namaPengirimInfo(evt.Info),
+		Waktu:     time.Now(),
+		Teks:      potongTeks(teksPesan(inner)),
+		Raw:       inner,
+		ChatJID:   evt.Info.Chat.ToNonAD().String(),
+		SenderJID: evt.Info.Sender.ToNonAD().String(),
 	}
 	if am, ok := ekstrakMedia(inner); ok {
 		p.Media = am
@@ -698,15 +710,100 @@ func catatViewOnceTertahan(evt *events.UndecryptableMessage) {
 		}
 	}
 	p := arsipPesan{
-		ID:       evt.Info.ID,
-		Pengirim: namaPengirimInfo(evt.Info),
-		Waktu:    time.Now(),
-		ErrUnduh: pesanViewOnceTertahan,
+		ID:        evt.Info.ID,
+		Pengirim:  namaPengirimInfo(evt.Info),
+		Waktu:     time.Now(),
+		ErrUnduh:  pesanViewOnceTertahan,
+		ChatJID:   evt.Info.Chat.ToNonAD().String(),
+		SenderJID: evt.Info.Sender.ToNonAD().String(),
 	}
 	c.vo = rapikanArsip(append([]arsipPesan{p}, c.vo...), p.Waktu)
 	if len(c.vo) > arsipMaksVO {
 		c.vo = c.vo[:arsipMaksVO]
 	}
+	go pulihkanVO(chatKey, p.ID, p.ChatJID, p.SenderJID)
+}
+
+// jedaPermintaanHP membatasi satu permintaan salinan per pesan.
+const jedaPermintaanHP = 15 * time.Second
+
+// bolehMintaHP memeriksa jeda agar permintaan salinan per pesan tidak spam.
+func bolehMintaHP(id string) bool {
+	if id == "" {
+		return false
+	}
+	permintaanHP.Lock()
+	defer permintaanHP.Unlock()
+	if t, ada := permintaanHP.terakhir[id]; ada && time.Since(t) < jedaPermintaanHP {
+		return false
+	}
+	permintaanHP.terakhir[id] = time.Now()
+	return true
+}
+
+// mintaSalinanHP meminta HP utama mengirim ulang isi pesan view once.
+func mintaSalinanHP(chatJID, senderJID, id string) bool {
+	if waClient == nil || chatJID == "" || senderJID == "" || !bolehMintaHP(id) {
+		return false
+	}
+
+	chat, err := types.ParseJID(chatJID)
+	if err != nil {
+		return false
+	}
+	sender, err := types.ParseJID(senderJID)
+	if err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := waClient.SendPeerMessage(ctx, waClient.BuildUnavailableMessageRequest(chat, sender, id)); err != nil {
+		logger.Warnf("gagal meminta salinan view once %s ke HP utama: %v", id, err)
+		return false
+	}
+	return true
+}
+
+// pulihkanVO mencoba lagi beberapa kali bila HP utama belum mengirim salinan.
+func pulihkanVO(chatKey, id, chatJID, senderJID string) {
+	for _, jeda := range []time.Duration{20 * time.Second, 70 * time.Second} {
+		time.Sleep(jeda)
+		p, ok := cariVOByID(chatKey, id)
+		if !ok || p.Media == nil || len(p.Media.Data) > 0 {
+			return
+		}
+		if p.Raw != nil {
+			if data, err := unduhMedia(p.Raw); err == nil && len(data) > 0 {
+				simpanDataMediaArsip(chatKey, id, data)
+				return
+			}
+		}
+		mintaSalinanHP(chatJID, senderJID, id)
+	}
+}
+
+// tungguSalinan meminta salinan lalu menunggu sebentar sampai media tersedia.
+func tungguSalinan(chatKey, id, chatJID, senderJID string) bool {
+	if !mintaSalinanHP(chatJID, senderJID, id) {
+		return false
+	}
+	for i := 0; i < 8; i++ {
+		time.Sleep(time.Second)
+		p, ok := cariVOByID(chatKey, id)
+		if !ok {
+			return false
+		}
+		if p.Media != nil && len(p.Media.Data) > 0 {
+			return true
+		}
+		if p.Raw != nil {
+			if data, err := unduhMedia(p.Raw); err == nil && len(data) > 0 {
+				simpanDataMediaArsip(chatKey, id, data)
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func simpanVO(chat string, p arsipPesan) {
@@ -1062,6 +1159,14 @@ func tanganiVODenganPesan(chat types.JID, arg string, pesan *waE2E.Message) {
 }
 
 func kirimEntriVO(chat types.JID, chatKey string, p *arsipPesan) {
+	// Placeholder tanpa media/teks: coba minta salinan dari HP utama dulu.
+	if p.Media == nil && p.Raw == nil && p.Teks == "" && p.SenderJID != "" {
+		if tungguSalinan(chatKey, p.ID, p.ChatJID, p.SenderJID) {
+			if q, ok := cariVOByID(chatKey, p.ID); ok {
+				p = q
+			}
+		}
+	}
 	if p.Media != nil {
 		if len(p.Media.Data) == 0 && p.Raw != nil && waClient != nil {
 			data, err := unduhMedia(p.Raw)

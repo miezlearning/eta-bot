@@ -167,11 +167,37 @@ func TestPesanErrMedia(t *testing.T) {
 	}
 }
 
+func TestBolehMintaHP(t *testing.T) {
+	permintaanHP.Lock()
+	permintaanHP.terakhir = map[string]time.Time{}
+	permintaanHP.Unlock()
+
+	if !bolehMintaHP("VO1") {
+		t.Fatal("permintaan pertama harus boleh")
+	}
+	if bolehMintaHP("VO1") {
+		t.Error("permintaan kedua dalam jeda harus ditahan")
+	}
+	if !bolehMintaHP("VO2") {
+		t.Error("pesan lain harus punya jeda sendiri")
+	}
+	if bolehMintaHP("") {
+		t.Error("ID kosong harus ditolak")
+	}
+
+	permintaanHP.Lock()
+	permintaanHP.terakhir["VO1"] = time.Now().Add(-2 * jedaPermintaanHP)
+	permintaanHP.Unlock()
+	if !bolehMintaHP("VO1") {
+		t.Error("setelah jeda lewat, permintaan harus boleh lagi")
+	}
+}
+
 func TestViewOnceTertahanDigantiPesanAsli(t *testing.T) {
 	resetArsip()
 	chat := types.NewJID("628444", types.DefaultUserServer)
 	info := types.MessageInfo{
-		MessageSource: types.MessageSource{Chat: chat},
+		MessageSource: types.MessageSource{Chat: chat, Sender: chat},
 		ID:            "VO-UNAVAIL",
 		PushName:      "Eko",
 	}
@@ -186,6 +212,9 @@ func TestViewOnceTertahanDigantiPesanAsli(t *testing.T) {
 	}
 	if p.ErrUnduh != pesanViewOnceTertahan {
 		t.Errorf("pesan penahanan = %q", p.ErrUnduh)
+	}
+	if p.ChatJID == "" || p.SenderJID == "" {
+		t.Errorf("JID untuk permintaan salinan tidak disimpan: %+v", p)
 	}
 
 	// Saat HP utama mengirim ulang isi aslinya dengan ID sama, entri diganti tanpa duplikasi.

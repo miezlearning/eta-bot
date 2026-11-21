@@ -384,10 +384,13 @@ Batas view once di perangkat tertaut: WhatsApp **tetap menahan** media sekali
 lihat dari perangkat tertaut (bot) dan hanya mengirim penanda
 `unavailable: view_once`; media normalnya hanya bisa dibuka di HP utama.
 whatsmeow otomatis meminta salinannya ke HP utama, jadi bila HP sedang online
-dan merespons, media terisi dan `/vo` mengirimkannya. Bila HP offline atau
-WhatsApp tidak menyertakan URL media, `/vo` menampilkan pesan bahwa media
-ditahan. Karena itu `/vo` bergantung pada sesi bot **dan** HP utama yang online;
-membalas pesan sekali lihat dengan `/vo` juga dicoba lewat jalur unduh langsung.
+dan merespons, media terisi dan `/vo` mengirimkannya. Bot juga melakukan
+permintaan ulang sendiri (maks. 15 detik sekali per pesan, beberapa kali) dan
+`/vo` menunggu sampai 8 detik sambil mendownload ulang bila ternyata salinan
+sudah masuk. Bila HP offline atau WhatsApp tidak menyertakan URL media, `/vo`
+menampilkan pesan bahwa media ditahan. Karena itu `/vo` bergantung pada sesi bot
+**dan** HP utama yang online; membalas pesan sekali lihat dengan `/vo` juga
+dicoba lewat jalur unduh langsung.
 
 Catatan filter prodi: daftar e-room tidak memuat prodi, jadi prodi diambil dari
 halaman **detail e-room** (`/api/eroom/sidang/:token`, field `peserta.prodi`).
