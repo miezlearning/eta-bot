@@ -380,6 +380,15 @@ sementara (20 item per chat) agar isinya bisa ditampilkan bila di-revoke. `/vo`
 mengirim media tanpa teks pengantar; `/hapus` menampilkan daftar, lalu
 `/hapus <nomor>` mengirim ulang isi aslinya. Restart bot mengosongkan arsip.
 
+Batas view once di perangkat tertaut: WhatsApp **tetap menahan** media sekali
+lihat dari perangkat tertaut (bot) dan hanya mengirim penanda
+`unavailable: view_once`; media normalnya hanya bisa dibuka di HP utama.
+whatsmeow otomatis meminta salinannya ke HP utama, jadi bila HP sedang online
+dan merespons, media terisi dan `/vo` mengirimkannya. Bila HP offline atau
+WhatsApp tidak menyertakan URL media, `/vo` menampilkan pesan bahwa media
+ditahan. Karena itu `/vo` bergantung pada sesi bot **dan** HP utama yang online;
+membalas pesan sekali lihat dengan `/vo` juga dicoba lewat jalur unduh langsung.
+
 Catatan filter prodi: daftar e-room tidak memuat prodi, jadi prodi diambil dari
 halaman **detail e-room** (`/api/eroom/sidang/:token`, field `peserta.prodi`).
 Untuk prodi akun sendiri, NIM dari `/api/judul-skripsi` langsung dipakai tanpa

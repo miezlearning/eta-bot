@@ -1,11 +1,13 @@
 package main
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
@@ -156,6 +158,15 @@ func TestBukaPembungkusDanViewOnceLangsung(t *testing.T) {
 	}
 }
 
+func TestPesanErrMedia(t *testing.T) {
+	if got := pesanErrMedia(whatsmeow.ErrNoURLPresent); got != pesanViewOnceTertahan {
+		t.Errorf("ErrNoURLPresent = %q", got)
+	}
+	if got := pesanErrMedia(errors.New("rusak")); got != "rusak" {
+		t.Errorf("galat lain = %q", got)
+	}
+}
+
 func TestViewOnceTertahanDigantiPesanAsli(t *testing.T) {
 	resetArsip()
 	chat := types.NewJID("628444", types.DefaultUserServer)
@@ -172,6 +183,9 @@ func TestViewOnceTertahanDigantiPesanAsli(t *testing.T) {
 	p, ok := ambilVO(chat.String(), 1)
 	if !ok || p.ErrUnduh == "" {
 		t.Fatalf("placeholder view once tertahan tidak tercatat: %+v", p)
+	}
+	if p.ErrUnduh != pesanViewOnceTertahan {
+		t.Errorf("pesan penahanan = %q", p.ErrUnduh)
 	}
 
 	// Saat HP utama mengirim ulang isi aslinya dengan ID sama, entri diganti tanpa duplikasi.

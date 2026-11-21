@@ -29,6 +29,9 @@ const (
 	arsipMaksBotID   = 200
 )
 
+// pesanViewOnceTertahan menjelaskan batasan WhatsApp untuk perangkat tertaut.
+const pesanViewOnceTertahan = "WhatsApp menahan media sekali lihat untuk perangkat tertaut (hanya bisa dibuka di HP utama)."
+
 type arsipMedia struct {
 	Jenis string
 	MIME  string
@@ -465,11 +468,23 @@ func unduhMedia(m *waE2E.Message) ([]byte, error) {
 	return nil, whatsmeow.ErrNoURLPresent
 }
 
+// pesanErrMedia memilih pesan galat yang ramah untuk pengguna.
+func pesanErrMedia(err error) string {
+	if errors.Is(err, whatsmeow.ErrNoURLPresent) {
+		return pesanViewOnceTertahan
+	}
+	return err.Error()
+}
+
 // lengkapiMediaArsip mengunduh media di latar belakang lalu memperbarui entri arsip yang cocok.
 func lengkapiMediaArsip(chatKey, id string, raw *waE2E.Message, logVO bool) {
 	data, err := unduhMedia(raw)
-	if err != nil && logVO {
-		logger.Warnf("gagal mengunduh view once: %v", err)
+	pesanErr := ""
+	if err != nil {
+		if logVO {
+			logger.Warnf("gagal mengunduh view once: %v", err)
+		}
+		pesanErr = pesanErrMedia(err)
 	}
 
 	arsip.Lock()
@@ -484,7 +499,7 @@ func lengkapiMediaArsip(chatKey, id string, raw *waE2E.Message, logVO bool) {
 				continue
 			}
 			if err != nil {
-				l[i].ErrUnduh = err.Error()
+				l[i].ErrUnduh = pesanErr
 			} else if l[i].Media != nil {
 				l[i].Media.Data = data
 				l[i].ErrUnduh = ""
@@ -495,7 +510,7 @@ func lengkapiMediaArsip(chatKey, id string, raw *waE2E.Message, logVO bool) {
 	perbarui(c.hapus)
 	if p, ada := c.terakhir[id]; ada {
 		if err != nil {
-			p.ErrUnduh = err.Error()
+			p.ErrUnduh = pesanErr
 		} else if p.Media != nil {
 			m := *p.Media
 			m.Data = data
@@ -686,7 +701,7 @@ func catatViewOnceTertahan(evt *events.UndecryptableMessage) {
 		ID:       evt.Info.ID,
 		Pengirim: namaPengirimInfo(evt.Info),
 		Waktu:    time.Now(),
-		ErrUnduh: "WhatsApp menahan media sekali lihat untuk perangkat tertaut (hanya bisa dibuka di HP utama).",
+		ErrUnduh: pesanViewOnceTertahan,
 	}
 	c.vo = rapikanArsip(append([]arsipPesan{p}, c.vo...), p.Waktu)
 	if len(c.vo) > arsipMaksVO {
@@ -1051,7 +1066,7 @@ func kirimEntriVO(chat types.JID, chatKey string, p *arsipPesan) {
 		if len(p.Media.Data) == 0 && p.Raw != nil && waClient != nil {
 			data, err := unduhMedia(p.Raw)
 			if err != nil {
-				kirimBalasan(chat, "Gagal mengunduh media sekali lihat: "+err.Error())
+				kirimBalasan(chat, "Gagal mengunduh media sekali lihat: "+pesanErrMedia(err))
 				return
 			}
 			p.Media.Data = data
